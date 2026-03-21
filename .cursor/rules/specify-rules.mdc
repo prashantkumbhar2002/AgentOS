@@ -28,6 +28,7 @@ tests/
 : Follow standard conventions
 
 ## Recent Changes
+- 002-jwt-auth-rbac: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
 
 - 002-jwt-auth-rbac: Added
 
