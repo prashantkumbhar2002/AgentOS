@@ -1,0 +1,82 @@
+import { z } from 'zod';
+
+export const AuditEventTypeSchema = z.enum([
+  'llm_call',
+  'tool_call',
+  'approval_requested',
+  'approval_resolved',
+  'action_blocked',
+  'action_taken',
+]);
+export type AuditEventType = z.infer<typeof AuditEventTypeSchema>;
+
+export const AuditEventSchema = z.object({
+  agentId: z.string().uuid(),
+  traceId: z.string().uuid(),
+  event: AuditEventTypeSchema,
+  model: z.string().optional(),
+  toolName: z.string().optional(),
+  inputs: z.unknown().optional(),
+  outputs: z.unknown().optional(),
+  inputTokens: z.number().int().min(0).optional(),
+  outputTokens: z.number().int().min(0).optional(),
+  latencyMs: z.number().int().min(0).optional(),
+  success: z.boolean().default(true),
+  errorMsg: z.string().optional(),
+  metadata: z.unknown().optional(),
+});
+export type AuditEventInput = z.infer<typeof AuditEventSchema>;
+
+export const AuditQuerySchema = z.object({
+  agentId: z.string().uuid().optional(),
+  traceId: z.string().uuid().optional(),
+  event: AuditEventTypeSchema.optional(),
+  success: z.coerce.boolean().optional(),
+  fromDate: z.coerce.date().optional(),
+  toDate: z.coerce.date().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  export: z.string().optional(),
+});
+export type AuditQuery = z.infer<typeof AuditQuerySchema>;
+
+export const AuditLogSchema = z.object({
+  id: z.string().uuid(),
+  agentId: z.string().uuid(),
+  traceId: z.string().uuid(),
+  event: z.string(),
+  model: z.string().nullable(),
+  toolName: z.string().nullable(),
+  inputs: z.unknown().nullable(),
+  outputs: z.unknown().nullable(),
+  inputTokens: z.number().int().nullable(),
+  outputTokens: z.number().int().nullable(),
+  costUsd: z.number().nullable(),
+  latencyMs: z.number().int().nullable(),
+  success: z.boolean(),
+  errorMsg: z.string().nullable(),
+  metadata: z.unknown().nullable(),
+  createdAt: z.coerce.date(),
+});
+export type AuditLog = z.infer<typeof AuditLogSchema>;
+
+export const TraceIdParamsSchema = z.object({
+  traceId: z.string().uuid(),
+});
+export type TraceIdParams = z.infer<typeof TraceIdParamsSchema>;
+
+export const TopToolSchema = z.object({
+  name: z.string(),
+  count: z.number().int(),
+});
+
+export const AgentStatsResponseSchema = z.object({
+  totalRuns: z.number().int(),
+  totalCalls: z.number().int(),
+  totalCostUsd: z.number(),
+  avgLatencyMs: z.number(),
+  errorRate: z.number(),
+  successRate: z.number(),
+  topTools: z.array(TopToolSchema),
+});
+export type AgentStatsResponse = z.infer<typeof AgentStatsResponseSchema>;

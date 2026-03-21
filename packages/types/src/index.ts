@@ -45,3 +45,22 @@ export type {
   AgentStats,
   AgentDetail,
 } from './agent.js';
+
+export {
+  AuditEventTypeSchema,
+  AuditEventSchema,
+  AuditQuerySchema,
+  AuditLogSchema,
+  TraceIdParamsSchema,
+  TopToolSchema,
+  AgentStatsResponseSchema,
+} from './audit.js';
+
+export type {
+  AuditEventType,
+  AuditEventInput,
+  AuditQuery,
+  AuditLog,
+  TraceIdParams,
+  AgentStatsResponse,
+} from './audit.js';
