@@ -106,14 +106,74 @@ export class GovernanceClient {
     }
   }
 
-  async requestApproval(_params: {
+  async requestApproval(params: {
     actionType: string;
     payload: unknown;
     reasoning: string;
     riskScore: number;
-  }): Promise<never> {
-    throw new Error(
-      'requestApproval is not yet implemented — awaiting EPIC 4',
-    );
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+  }): Promise<{ decision: string; ticketId: string }> {
+    const pollInterval = params.pollIntervalMs ?? 3_000;
+    const maxWait = params.maxWaitMs ?? 30 * 60 * 1000;
+
+    try {
+      const createRes = await fetch(`${this.platformUrl}/api/approvals`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          agentId: this.agentId,
+          actionType: params.actionType,
+          payload: params.payload,
+          riskScore: params.riskScore,
+          reasoning: params.reasoning,
+        }),
+      });
+
+      const createBody = (await createRes.json()) as Record<string, unknown>;
+
+      if (createBody['status'] === 'AUTO_APPROVED') {
+        return { decision: 'AUTO_APPROVED', ticketId: '' };
+      }
+
+      if (!createRes.ok) {
+        return { decision: 'DENIED', ticketId: '' };
+      }
+
+      const ticketId = createBody['ticketId'] as string;
+      const deadline = Date.now() + maxWait;
+
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, pollInterval));
+
+        try {
+          const pollRes = await fetch(
+            `${this.platformUrl}/api/approvals/${ticketId}`,
+            {
+              headers: { Authorization: `Bearer ${this.apiKey}` },
+            },
+          );
+
+          if (!pollRes.ok) continue;
+
+          const ticket = (await pollRes.json()) as Record<string, unknown>;
+          const status = ticket['status'] as string;
+
+          if (status !== 'PENDING') {
+            return { decision: status, ticketId };
+          }
+        } catch {
+          console.warn('[GovernanceClient] Poll error — retrying');
+        }
+      }
+
+      return { decision: 'EXPIRED', ticketId };
+    } catch (err) {
+      console.warn('[GovernanceClient] requestApproval failed:', err);
+      return { decision: 'ERROR', ticketId: '' };
+    }
   }
 }

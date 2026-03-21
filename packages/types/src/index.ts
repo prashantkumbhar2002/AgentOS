@@ -64,3 +64,21 @@ export type {
   TraceIdParams,
   AgentStatsResponse,
 } from './audit.js';
+
+export {
+  ApprovalStatusSchema,
+  CreateApprovalSchema,
+  ApprovalDecisionSchema,
+  ApprovalTicketSchema,
+  ApprovalQuerySchema,
+  ApprovalIdParamsSchema,
+} from './approval.js';
+
+export type {
+  ApprovalStatus,
+  CreateApprovalInput,
+  ApprovalDecisionInput,
+  ApprovalTicket,
+  ApprovalQuery,
+  ApprovalIdParams,
+} from './approval.js';

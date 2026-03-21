@@ -10,6 +10,9 @@ const EnvSchema = z.object({
     .default('development'),
   FRONTEND_URL: z.string().default('http://localhost:5173'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
+  SLACK_BOT_TOKEN: z.string().optional(),
+  SLACK_SIGNING_SECRET: z.string().optional(),
+  SLACK_CHANNEL_ID: z.string().optional(),
 });
 
 function loadEnv() {

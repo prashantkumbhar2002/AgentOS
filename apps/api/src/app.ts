@@ -4,9 +4,12 @@ import rateLimit from '@fastify/rate-limit';
 import prismaPlugin from './plugins/prisma.js';
 import authPlugin from './plugins/auth.js';
 import ssePlugin from './plugins/sse.js';
+import bullmqPlugin from './plugins/bullmq.js';
+import slackPlugin from './plugins/slack.js';
 import usersRoutes from './modules/users/users.routes.js';
 import agentsRoutes from './modules/agents/agents.routes.js';
 import auditRoutes from './modules/audit/audit.routes.js';
+import approvalRoutes from './modules/approvals/approvals.routes.js';
 import { env } from './config/env.js';
 
 export async function buildApp() {
@@ -32,10 +35,13 @@ export async function buildApp() {
   await fastify.register(prismaPlugin);
   await fastify.register(authPlugin);
   await fastify.register(ssePlugin);
+  await fastify.register(bullmqPlugin);
+  await fastify.register(slackPlugin);
 
   await fastify.register(usersRoutes, { prefix: '/api/auth' });
   await fastify.register(agentsRoutes, { prefix: '/api/agents' });
   await fastify.register(auditRoutes, { prefix: '/api/audit' });
+  await fastify.register(approvalRoutes, { prefix: '/api/approvals' });
 
   fastify.get('/api/events/stream', async (request, reply) => {
     const token = (request.query as Record<string, string>)['token'];

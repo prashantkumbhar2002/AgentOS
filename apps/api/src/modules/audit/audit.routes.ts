@@ -5,7 +5,7 @@ import {
   TraceIdParamsSchema,
   AgentIdParamsSchema,
 } from './audit.schema.js';
-import { authenticate, requireRole } from '../../plugins/auth.js';
+import { authenticate } from '../../plugins/auth.js';
 import { calculateCost } from '../../utils/cost-calculator.js';
 import {
   createLog,

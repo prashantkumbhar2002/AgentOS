@@ -19,7 +19,9 @@
     "@fastify/jwt": "^9",
     "@fastify/rate-limit": "^10",
     "@prisma/client": "^6",
+    "@slack/web-api": "^7.15.0",
     "bcrypt": "^5",
+    "bullmq": "^5.71.0",
     "fastify": "^5",
     "fastify-plugin": "^5",
     "zod": "^3"
