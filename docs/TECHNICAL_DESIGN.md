@@ -1,8 +1,8 @@
 # AgentOS — Technical Design Document
 
 **Project**: AgentOS — AI Agent Governance & Management Platform
-**Version**: 1.0.0
-**Date**: 2026-03-21
+**Version**: 2.0.0
+**Date**: 2026-03-21 (updated)
 **Branch**: `002-jwt-auth-rbac`
 
 ---
@@ -22,8 +22,9 @@
 11. [Testing Strategy](#11-testing-strategy)
 12. [Security & RBAC](#12-security--rbac)
 13. [Configuration & Environment](#13-configuration--environment)
-14. [Constitution & Design Principles](#14-constitution--design-principles)
-15. [Glossary](#15-glossary)
+14. [Frontend Architecture (EPIC 8)](#14-frontend-architecture-epic-8)
+15. [Constitution & Design Principles](#15-constitution--design-principles)
+16. [Glossary](#16-glossary)
 
 ---
 
@@ -37,8 +38,9 @@ AgentOS is an AI Agent Governance & Management Platform that provides centralize
 - **Route high-risk decisions** through human-in-the-loop approval workflows with Slack integration and real-time notifications
 - **Track costs and usage** across all agents with org-wide analytics dashboards
 - **Demonstrate the platform** with two live Claude-powered showcase agents and a mock data seeder
+- **Visualize everything** through a production-grade React dashboard with 8 pages, real-time SSE feed, and interactive charts
 
-The platform is API-first (no frontend in current scope) and designed for teams operating multiple AI agents in production.
+The platform consists of a Fastify REST API backend and a React SPA frontend, designed for teams operating multiple AI agents in production.
 
 ---
 
@@ -120,6 +122,16 @@ Agent Action → GovernanceClient.requestApproval()
 | **Messaging** | @slack/web-api | latest |
 | **Testing** | Vitest + Supertest | v3 / v7 |
 | **Realtime** | Server-Sent Events (SSE) | — |
+| **Frontend Framework** | React | 18 |
+| **Frontend Bundler** | Vite | 8.x |
+| **Styling** | TailwindCSS + shadcn/ui | v3 |
+| **Server State** | TanStack Query | v5 |
+| **Client State** | Zustand | latest |
+| **HTTP Client** | Axios | latest |
+| **Routing** | React Router | v6 |
+| **Charts** | Recharts | latest |
+| **Icons** | Lucide React | latest |
+| **Date Utils** | date-fns | latest |
 
 ### Non-Negotiable Constraints
 
@@ -169,6 +181,24 @@ AgentOS/
 │           │   └── notification.worker.ts  # BullMQ Slack worker
 │           ├── app.ts               # Fastify app factory
 │           └── server.ts            # Entry point
+│   └── web/                          # React Dashboard (SPA)
+│       └── src/
+│           ├── components/
+│           │   ├── layout/          # AppLayout, Sidebar, TopBar
+│           │   ├── shared/          # StatusBadge, RiskBadge, StatCard, etc.
+│           │   ├── dashboard/       # DashboardStats, AgentHealthTable, LiveFeed
+│           │   ├── agents/          # AgentTable, RegisterModal, Detail tabs
+│           │   ├── approvals/       # ApprovalCard, DecisionDialog, ResolvedTable
+│           │   ├── audit/           # AuditTable, FilterBar, TraceDrawer
+│           │   ├── analytics/       # Charts (Cost, Pie, Bar, Leaderboard)
+│           │   ├── policies/        # PolicyList
+│           │   └── ui/              # shadcn/ui primitives (28 components)
+│           ├── hooks/               # useSSE, useAgents, useApprovals, etc.
+│           ├── lib/                  # api.ts, queryClient.ts, formatters.ts
+│           ├── pages/               # 8 route pages
+│           ├── store/               # useAuthStore.ts (Zustand)
+│           ├── App.tsx              # Router + providers
+│           └── main.tsx             # Entry point
 ├── packages/
 │   ├── types/                       # Shared Zod schemas + TS types
 │   │   └── src/
@@ -187,7 +217,8 @@ AgentOS/
 │   ├── 005-approval-workflows/
 │   ├── 006-policy-engine/
 │   ├── 007-analytics-cost-tracking/
-│   └── 008-showcase-agents/
+│   ├── 008-showcase-agents/
+│   └── 009-react-dashboard/
 └── docs/
     └── TECHNICAL_DESIGN.md          # This document
 ```
@@ -537,6 +568,30 @@ Demonstrates the full governance loop:
 
 **Key implementation files**: `emailDraftAgent.ts`, `researchAgent.ts`, `mockAgent.ts`, `showcase.routes.ts`
 
+### EPIC 8 — Frontend — React Dashboard
+
+| Aspect | Detail |
+|--------|--------|
+| **User Stories** | 7 |
+| **Functional Requirements** | 41 |
+| **Success Criteria** | 9 |
+| **Pages** | 8 (Login + 7 app pages) |
+| **Components** | 40+ custom components |
+| **shadcn/ui primitives** | 28 installed |
+
+Production-grade React SPA covering the full platform:
+
+**Pages**: Login, Dashboard, Agent Registry, Agent Detail, Approval Queue, Audit Explorer, Analytics, Policies
+
+**Key architectural patterns**:
+- All data fetching through TanStack Query hooks — no direct Axios calls in components
+- Zustand auth store with localStorage persistence, wired to Axios interceptors
+- SSE hook (`useSSE`) with exponential backoff reconnection, automatic query cache invalidation
+- Consistent color system for agent status, risk tier, and event types across all pages
+- shadcn/ui dark theme with zinc palette as base
+
+**Key implementation files**: `api.ts`, `queryClient.ts`, `useAuthStore.ts`, `useSSE.ts`, `App.tsx`, all `pages/*.tsx`
+
 ---
 
 ## 9. GovernanceClient SDK
@@ -708,7 +763,237 @@ Running `npx prisma db seed` creates:
 
 ---
 
-## 14. Constitution & Design Principles
+## 14. Frontend Architecture (EPIC 8)
+
+### 14.1 Tech Stack & Build
+
+| Concern | Choice |
+|---------|--------|
+| **Framework** | React 18 (SPA) |
+| **Bundler** | Vite 8.x |
+| **Styling** | TailwindCSS v3 + shadcn/ui (zinc dark theme) |
+| **Server State** | TanStack Query v5 |
+| **Client State** | Zustand (persisted to localStorage) |
+| **HTTP** | Axios with JWT request interceptor + 401 response interceptor |
+| **Routing** | React Router v6 with protected route wrapper |
+| **Charts** | Recharts (LineChart, PieChart, BarChart) |
+| **Icons** | Lucide React |
+| **Dates** | date-fns (formatDistanceToNow, format) |
+| **Utilities** | clsx + tailwind-merge (via `cn()` helper) |
+
+### 14.2 Project Structure
+
+```
+apps/web/src/
+├── components/
+│   ├── layout/           AppLayout, Sidebar, TopBar
+│   ├── shared/           StatusBadge, RiskBadge, EventBadge, StatCard,
+│   │                     EmptyState, ErrorState, HealthBar, ConfirmDialog
+│   ├── dashboard/        DashboardStats, AgentHealthTable, LiveActivityFeed
+│   ├── agents/           AgentFilterBar, AgentTable, RegisterAgentModal,
+│   │                     AgentHeader, AgentStats, 5 detail tabs
+│   ├── approvals/        ApprovalCard, ApprovalDecisionDialog, ResolvedTable
+│   ├── audit/            AuditFilterBar, AuditTable, TraceDrawer
+│   ├── analytics/        CostSummaryCards, CostTimelineChart,
+│   │                     ApprovalPieChart, ModelUsageChart, LeaderboardTable
+│   ├── policies/         PolicyList
+│   └── ui/               28 shadcn/ui primitives (Button, Card, Dialog, etc.)
+├── hooks/
+│   ├── useSSE.ts         SSE connection with exponential backoff
+│   ├── useAgents.ts      TanStack Query hooks for agent CRUD
+│   ├── useApprovals.ts   Approval list + decision mutations
+│   ├── useAuditLogs.ts   Audit query + CSV export
+│   ├── useAnalytics.ts   5 analytics query hooks
+│   └── usePolicies.ts    Policy list + detail
+├── lib/
+│   ├── api.ts            Axios instance + typed API functions per module
+│   ├── queryClient.ts    QueryClient + key factories
+│   ├── formatters.ts     formatUsd, formatRelativeTime, formatDuration, formatTokens
+│   └── utils.ts          cn() helper
+├── pages/
+│   ├── LoginPage.tsx
+│   ├── DashboardPage.tsx
+│   ├── AgentsPage.tsx
+│   ├── AgentDetailPage.tsx
+│   ├── ApprovalsPage.tsx
+│   ├── AuditPage.tsx
+│   ├── AnalyticsPage.tsx
+│   └── PoliciesPage.tsx
+├── store/
+│   └── useAuthStore.ts   Zustand auth state with persist middleware
+├── App.tsx               Router + QueryClientProvider + Toaster
+└── main.tsx              Entry point
+```
+
+### 14.3 Data Flow Architecture
+
+```
+User Action → Component → useMutation/useQuery (TanStack)
+                              ↓
+                         lib/api.ts (Axios)
+                              ↓ (request interceptor adds JWT)
+                         Fastify API
+                              ↓
+                         Response
+                              ↓ (401 → interceptor clears auth, redirect /login)
+                         TanStack Cache → Re-render
+```
+
+**SSE Flow**:
+```
+useSSE hook → EventSource(GET /api/events/stream?token=JWT)
+                  ↓
+           Parse event type
+                  ↓
+           queryClient.invalidateQueries(['approvals' | 'agents' | 'audit'])
+                  ↓
+           Component auto-refetches via TanStack Query
+```
+
+### 14.4 State Management
+
+**Server State (TanStack Query)**:
+- `staleTime: 30s` — data considered fresh for 30 seconds
+- `gcTime: 5min` — unused cache garbage collected after 5 minutes
+- `retry: 1` — single retry on failure
+- Key factories for consistent cache management:
+  - `agentKeys.all` / `agentKeys.detail(id)` / `agentKeys.list(filters)`
+  - `approvalKeys.all` / `approvalKeys.detail(id)` / `approvalKeys.list(filters)`
+  - `auditKeys.all` / `auditKeys.list(filters)` / `auditKeys.trace(traceId)` / `auditKeys.agentStats(agentId)`
+  - `analyticsKeys.costs` / `analyticsKeys.timeline(range)` / `analyticsKeys.usage` / `analyticsKeys.leaderboard` / `analyticsKeys.models`
+  - `policyKeys.all` / `policyKeys.detail(id)` / `policyKeys.list()`
+
+**Client State (Zustand)**:
+- `useAuthStore`: `{ user, token, isAuthenticated, login(), logout() }`
+- Persisted to `localStorage` key `"auth-storage"`
+- On `login()`: calls `POST /api/auth/login`, stores token, fetches `GET /api/auth/me`
+- On `logout()`: clears state, redirects to `/login`
+
+### 14.5 Authentication Flow
+
+1. User submits email/password on `LoginPage`
+2. `useAuthStore.login()` calls `POST /api/auth/login` → receives JWT
+3. Stores `{ user, token }` in Zustand (persisted to localStorage)
+4. Axios request interceptor reads token from store, attaches `Authorization: Bearer <token>`
+5. On any 401 response: interceptor calls `logout()`, redirects to `/login`
+6. `ProtectedRoute` component checks `isAuthenticated`, redirects unauthenticated users
+
+### 14.6 SSE (Server-Sent Events) Integration
+
+The `useSSE` hook provides live updates across the dashboard:
+
+| Event Type | Query Invalidation | UI Effect |
+|------------|-------------------|-----------|
+| `approval.*` | `['approvals']` | New card in approval queue, remove resolved |
+| `agent.*` | `['agents']` | Status updates in agent table |
+| `audit.*` | `['audit']` | New entries in audit explorer |
+
+**Reconnection Strategy**: Exponential backoff starting at 2s, doubling each attempt, capped at 30s. Event buffer limited to 50 entries (FIFO).
+
+### 14.7 Routing
+
+| Path | Page | Auth Required | Role |
+|------|------|--------------|------|
+| `/login` | LoginPage | No | — |
+| `/` | DashboardPage | Yes | Any |
+| `/agents` | AgentsPage | Yes | Any |
+| `/agents/:id` | AgentDetailPage | Yes | Any |
+| `/approvals` | ApprovalsPage | Yes | Any |
+| `/audit` | AuditPage | Yes | Any |
+| `/analytics` | AnalyticsPage | Yes | Any |
+| `/policies` | PoliciesPage | Yes | Any |
+
+Admin-only features (edit agent, register agent, export CSV) are conditionally rendered based on `user.role`.
+
+### 14.8 Color System
+
+**Agent Status**:
+| Status | Color | Tailwind Class |
+|--------|-------|---------------|
+| DRAFT | Slate | `bg-slate-500/20 text-slate-400` |
+| APPROVED | Blue | `bg-blue-500/20 text-blue-400` |
+| ACTIVE | Green | `bg-green-500/20 text-green-400` |
+| SUSPENDED | Amber | `bg-amber-500/20 text-amber-400` |
+| DEPRECATED | Red | `bg-red-500/20 text-red-400` |
+
+**Risk Tier**:
+| Tier | Color | Tailwind Class |
+|------|-------|---------------|
+| LOW | Green | `bg-green-500/20 text-green-400` |
+| MEDIUM | Yellow | `bg-yellow-500/20 text-yellow-400` |
+| HIGH | Orange | `bg-orange-500/20 text-orange-400` |
+| CRITICAL | Red | `bg-red-500/20 text-red-400` |
+
+**Event Type**:
+| Event | Color | Icon |
+|-------|-------|------|
+| llm_call | Blue | Brain |
+| tool_call | Violet | Wrench |
+| approval_requested | Orange | Clock |
+| approval_resolved | Green | CheckCircle |
+| action_blocked | Red | XCircle |
+
+### 14.9 Page Details
+
+**Dashboard** — 3-panel layout:
+- Top: 4 StatCards (Total Agents, Active Agents, Pending Approvals with pulse, Today's Cost)
+- Left (60%): Sortable Agent Health Table with HealthBar, clickable rows → Agent Detail
+- Right (40%): Live Activity Feed (SSE, auto-scroll, max 50, color-coded EventBadges)
+
+**Agent Registry** — Filter + Table + Modal:
+- Filter bar: status, risk tier, environment dropdowns, owner team input, search
+- Sortable table with inline StatusBadge, RiskBadge
+- 3-step registration modal: Basic Info → Tools → Risk Assessment
+
+**Agent Detail** — Header + Stats + 5 Tabs:
+- Header: name, badges, edit button (admin)
+- 4 mini StatCards: runs, cost, latency, health
+- Tabs: Overview (tools + policies), Traces (grouped by traceId accordion), Approvals (history table), Policies (assigned list), Settings (edit form + status controls, admin only)
+
+**Approval Queue** — 2-column layout:
+- Left: pending ApprovalCards sorted by urgency, pulsing red border < 5min, Approve/Deny buttons → ConfirmDialog with comment input
+- Right: resolved tickets table
+- Real-time via SSE
+
+**Audit Explorer** — Filter + Table + Drawer:
+- Filter bar: agent, event type, date range, trace ID search
+- Paginated sortable table with CSV export (admin/approver)
+- Click row → TraceDrawer (side sheet) with timeline view
+
+**Analytics** — Charts dashboard:
+- Time range selector (7d / 30d / 90d)
+- Cost summary cards with trend arrows
+- Multi-line cost timeline chart (Recharts LineChart, per agent)
+- Approval outcome pie chart (Recharts PieChart)
+- Model usage bar chart (Recharts BarChart)
+- Agent leaderboard sortable table
+
+**Policies** — Read-only list:
+- Expandable policy cards showing rules, action types, risk tiers, effects
+
+### 14.10 shadcn/ui Components Used
+
+28 primitives installed and configured with dark theme:
+
+`Accordion`, `AlertDialog`, `Badge`, `Button`, `Card`, `Checkbox`, `Collapsible`, `Command`, `Dialog`, `DropdownMenu`, `Form`, `Input`, `Label`, `Popover`, `Progress`, `RadioGroup`, `ScrollArea`, `Select`, `Separator`, `Sheet`, `Skeleton`, `Sonner (Toaster)`, `Switch`, `Table`, `Tabs`, `Textarea`, `Toggle`, `Tooltip`
+
+### 14.11 API Client Functions
+
+`apps/web/src/lib/api.ts` exports typed functions organized by module:
+
+| Module | Functions |
+|--------|-----------|
+| `authApi` | `login(email, password)`, `me()`, `refresh()` |
+| `agentsApi` | `list(params)`, `getById(id)`, `create(data)`, `update(id, data)`, `updateStatus(id, status)`, `remove(id)` |
+| `approvalsApi` | `list(params)`, `getById(id)`, `decide(id, decision, comment)` |
+| `auditApi` | `list(params)`, `getTrace(traceId)`, `getAgentStats(agentId)`, `exportCsv(params)` |
+| `policiesApi` | `list()`, `getById(id)` |
+| `analyticsApi` | `getCosts(params)`, `getCostTimeline(params)`, `getUsage(params)`, `getAgentLeaderboard(params)`, `getModelUsage(params)` |
+| `showcaseApi` | `runEmailAgent(task)`, `runResearchAgent(topic)`, `seedMockData()` |
+
+---
+
+## 15. Constitution & Design Principles
 
 The project follows 8 non-negotiable principles defined in the constitution:
 
@@ -758,7 +1043,7 @@ The project follows 8 non-negotiable principles defined in the constitution:
 
 ---
 
-## 15. Glossary
+## 16. Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -773,7 +1058,13 @@ The project follows 8 non-negotiable principles defined in the constitution:
 | **Health Score** | Composite metric (0-100) combining error rate, latency, cost, and activity |
 | **SSE** | Server-Sent Events — one-way realtime push from server to browser |
 | **BullMQ** | Redis-backed job queue for background processing (Slack notifications) |
+| **TanStack Query** | Server-state management library; handles caching, refetching, mutations |
+| **Zustand** | Lightweight client-state store used for auth persistence |
+| **shadcn/ui** | Copy-paste UI component library built on Radix UI + Tailwind |
+| **Query Key Factory** | Pattern for generating consistent TanStack Query cache keys per domain |
+| **Protected Route** | React Router wrapper that redirects unauthenticated users to /login |
+| **useSSE Hook** | Custom React hook managing EventSource connection with reconnection logic |
 
 ---
 
-*Document generated from codebase analysis on 2026-03-21. Covers EPICs 2, 4, 5, 6, 7.*
+*Document generated from codebase analysis on 2026-03-21. Covers EPICs 2, 4, 5, 6, 7, 8.*
