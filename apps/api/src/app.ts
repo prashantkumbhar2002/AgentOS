@@ -11,6 +11,7 @@ import agentsRoutes from './modules/agents/agents.routes.js';
 import auditRoutes from './modules/audit/audit.routes.js';
 import approvalRoutes from './modules/approvals/approvals.routes.js';
 import policyRoutes from './modules/policies/policies.routes.js';
+import analyticsRoutes from './modules/analytics/analytics.routes.js';
 import { env } from './config/env.js';
 
 export async function buildApp() {
@@ -44,6 +45,7 @@ export async function buildApp() {
   await fastify.register(auditRoutes, { prefix: '/api/audit' });
   await fastify.register(approvalRoutes, { prefix: '/api/approvals' });
   await fastify.register(policyRoutes, { prefix: '/api/policies' });
+  await fastify.register(analyticsRoutes, { prefix: '/api/analytics' });
 
   fastify.get('/api/events/stream', async (request, reply) => {
     const token = (request.query as Record<string, string>)['token'];

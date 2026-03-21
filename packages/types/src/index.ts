@@ -108,3 +108,28 @@ export type {
   PolicyEvaluationRequest,
   PolicyEvaluationResult,
 } from './policy.js';
+
+export {
+  DateRangeQuerySchema,
+  CostTimelineQuerySchema,
+  AgentLeaderboardQuerySchema,
+  CostSummarySchema,
+  CostTimelineSeriesSchema,
+  CostTimelineSchema,
+  UsageStatsSchema,
+  AgentLeaderboardEntrySchema,
+  AgentLeaderboardSchema,
+  ModelUsageEntrySchema,
+  ModelUsageSchema,
+} from './analytics.js';
+
+export type {
+  DateRangeQuery,
+  CostTimelineQuery,
+  AgentLeaderboardQuery,
+  CostSummary,
+  CostTimeline,
+  UsageStats,
+  AgentLeaderboard,
+  ModelUsage,
+} from './analytics.js';
