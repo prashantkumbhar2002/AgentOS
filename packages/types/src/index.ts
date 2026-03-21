@@ -15,3 +15,33 @@ export type {
   AuthResponse,
   ErrorResponse,
 } from './auth.js';
+
+export {
+  RiskTierSchema,
+  EnvironmentSchema,
+  AgentStatusSchema,
+  AgentToolSchema,
+  CreateAgentSchema,
+  UpdateAgentSchema,
+  UpdateAgentStatusSchema,
+  AgentListQuerySchema,
+  AgentIdParamsSchema,
+  AgentSummarySchema,
+  AgentStatsSchema,
+  AgentDetailSchema,
+} from './agent.js';
+
+export type {
+  RiskTier,
+  Environment,
+  AgentStatus,
+  AgentTool,
+  CreateAgentInput,
+  UpdateAgentInput,
+  UpdateAgentStatusInput,
+  AgentListQuery,
+  AgentIdParams,
+  AgentSummary,
+  AgentStats,
+  AgentDetail,
+} from './agent.js';
