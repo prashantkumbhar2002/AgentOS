@@ -119,11 +119,50 @@ The analytics dashboard answers questions like:
 - **How are approvals going?** — pie chart of auto-approved / approved / denied / expired
 - **Which models are used?** — call count, token usage, and cost per model
 
-### 6. Real-Time Updates
+### 6. Real-Time Updates (SSE & Live Activity)
 
-The dashboard receives **live updates** via Server-Sent Events (SSE). When an agent logs an action, requests approval, or a ticket is resolved, the relevant dashboard sections update automatically — no page refresh needed. The live activity feed on the dashboard shows events as they happen, color-coded by type.
+The dashboard maintains a **persistent connection** to the API server using Server-Sent Events (SSE). This is the green/red "Connected" / "Disconnected" indicator you see in the top bar.
 
-### 7. Showcase Agents
+**How it works**: When you log in, the browser opens a long-lived HTTP connection to the API (`/api/events/stream`). The server pushes events down this connection in real-time whenever something happens — an agent makes an LLM call, a tool is invoked, an approval ticket is created or resolved.
+
+**What happens on each event**:
+- The **Live Activity Feed** on the Dashboard home page shows events as they arrive, auto-scrolling with the latest at the top (capped at 50 entries)
+- The relevant dashboard data **refreshes automatically** — for example, when an approval ticket is resolved, the Approval Queue page updates without you clicking anything
+- Events are **color-coded** by type for quick scanning:
+
+| Color | Event Type | Meaning |
+|-------|-----------|---------|
+| Blue | `llm_call` | Agent called an LLM (Claude, GPT, etc.) |
+| Violet | `tool_call` | Agent used a tool (web search, email, database query) |
+| Orange | `approval_requested` | Agent is waiting for human approval |
+| Green | `approval_resolved` | A human approved or denied a request |
+| Red | `action_blocked` | A policy denied the agent's action |
+
+**If the connection drops** (network issue, server restart), the indicator turns red and the dashboard automatically retries with exponential backoff (2s → 4s → 8s → ... up to 30s). When it reconnects, it goes green again and live updates resume.
+
+### 7. Agent Health Score
+
+Every agent has a **health score from 0 to 100** that gives you an at-a-glance view of how well it's performing. The score is a weighted composite of three factors:
+
+| Factor | Weight | What it measures | Example |
+|--------|--------|-----------------|---------|
+| **Error rate** | 40% | How often the agent's actions fail (LLM timeouts, tool errors, exceptions) | 10% error rate → 36/40 points |
+| **Denial rate** | 30% | How often the agent's approval requests get denied by humans | 20% denied → 24/30 points |
+| **Latency** | 30% | How fast the agent completes its actions (penalized above 10 seconds) | 5s avg → 15/30 points |
+
+**How to read it**:
+- **80–100 (green)**: Agent is running smoothly — low errors, approvals mostly granted, fast responses
+- **50–79 (yellow)**: Agent needs attention — elevated error or denial rates, or slow performance
+- **0–49 (red)**: Agent is unhealthy — frequent failures, most requests denied, or critically slow
+
+**Where you see it**:
+- **Dashboard home page** — the Agent Health Table ranks all agents by health score with a colored progress bar, so you can instantly spot problems
+- **Agent Detail page** — shows health score as one of the 4 stat cards at the top
+- **Agent Leaderboard** (Analytics) — sortable by health score alongside cost and error rate
+
+**Why it matters**: A dropping health score is an early warning signal. High error rates might mean the agent's prompt or tool configuration needs fixing. High denial rates suggest the agent is repeatedly attempting actions outside its intended scope — it may need tighter policies or retraining. High latency could point to upstream API throttling or model overload.
+
+### 8. Showcase Agents
 
 To demonstrate the platform, AgentOS includes two working agents powered by Claude:
 
