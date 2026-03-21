@@ -1,25 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import type { CreateApprovalInput, ApprovalQuery } from '@agentos/types';
 
-export type PolicyEffect = 'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL';
-
-export interface PolicyEvaluation {
-  effect: PolicyEffect;
-  policyName?: string;
-}
-
-/**
- * Stub — always returns REQUIRE_APPROVAL.
- * Replace with real policy engine after EPIC 5.
- */
-export async function evaluatePolicy(
-  _prisma: PrismaClient,
-  _agentId: string,
-  _actionType: string,
-  _riskScore: number,
-): Promise<PolicyEvaluation> {
-  return { effect: 'REQUIRE_APPROVAL' };
-}
 
 const EXPIRATION_MINUTES = 30;
 

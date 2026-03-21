@@ -361,7 +361,7 @@ describe('PATCH /api/approvals/:id/decide', () => {
 
 describe('GET /api/approvals', () => {
   it('returns default list sorted by expiresAt ASC with pendingCount', async () => {
-    await createTicket({ riskScore: 0.3 });
+    await createTicket({ riskScore: 0.75 });
     await createTicket({ riskScore: 0.8 });
 
     const res = await agent

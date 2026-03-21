@@ -7,12 +7,13 @@ import {
 } from './approvals.schema.js';
 import { authenticate, requireRole } from '../../plugins/auth.js';
 import {
-  evaluatePolicy,
   createTicket,
   getTicket,
   resolveTicket,
   listTickets,
 } from './approvals.service.js';
+import { evaluatePolicy } from '../policies/policies.evaluator.js';
+import { getRiskLabel } from '../../utils/risk-label.js';
 
 export default async function approvalRoutes(
   fastify: FastifyInstance,
@@ -37,11 +38,12 @@ export default async function approvalRoutes(
         return reply.status(400).send({ error: 'Agent not found' });
       }
 
+      const { label: riskTier } = getRiskLabel(parsed.data.riskScore);
       const policy = await evaluatePolicy(
         fastify.prisma,
         parsed.data.agentId,
         parsed.data.actionType,
-        parsed.data.riskScore,
+        riskTier,
       );
 
       if (policy.effect === 'ALLOW') {
@@ -51,7 +53,8 @@ export default async function approvalRoutes(
       if (policy.effect === 'DENY') {
         return reply.status(403).send({
           error: 'Action blocked by policy',
-          policyName: policy.policyName ?? 'Unknown',
+          policyName: policy.matchedPolicy?.name ?? 'Unknown',
+          reason: policy.reason,
         });
       }
 

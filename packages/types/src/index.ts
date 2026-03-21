@@ -82,3 +82,29 @@ export type {
   ApprovalQuery,
   ApprovalIdParams,
 } from './approval.js';
+
+export {
+  PolicyEffectSchema,
+  PolicyRuleInputSchema,
+  CreatePolicySchema,
+  UpdatePolicySchema,
+  PolicyIdParamsSchema,
+  PolicyListQuerySchema,
+  PolicyAssignSchema,
+  PolicyUnassignParamsSchema,
+  PolicyEvaluationRequestSchema,
+  PolicyEvaluationResultSchema,
+} from './policy.js';
+
+export type {
+  PolicyEffect,
+  PolicyRuleInput,
+  CreatePolicyInput,
+  UpdatePolicyInput,
+  PolicyIdParams,
+  PolicyListQuery,
+  PolicyAssignInput,
+  PolicyUnassignParams,
+  PolicyEvaluationRequest,
+  PolicyEvaluationResult,
+} from './policy.js';
