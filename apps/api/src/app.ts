@@ -63,10 +63,13 @@ export async function buildApp() {
 
     reply.hijack();
 
+    const origin = env.NODE_ENV === 'production' ? env.FRONTEND_URL : '*';
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
     });
 
     const clientId = fastify.sse.addClient(reply);
