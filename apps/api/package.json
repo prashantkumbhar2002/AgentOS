@@ -1,0 +1,39 @@
+{
+  "name": "@agentos/api",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "prisma db seed",
+    "db:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@agentos/types": "*",
+    "@fastify/cors": "^10",
+    "@fastify/jwt": "^9",
+    "@fastify/rate-limit": "^10",
+    "@prisma/client": "^6",
+    "bcrypt": "^5",
+    "fastify": "^5",
+    "fastify-plugin": "^5",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5",
+    "@types/supertest": "^6",
+    "prisma": "^6",
+    "supertest": "^7",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

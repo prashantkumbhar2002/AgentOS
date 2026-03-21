@@ -1,0 +1,156 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RiskTier {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum Environment {
+  DEV
+  STAGING
+  PROD
+}
+
+enum AgentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ACTIVE
+  SUSPENDED
+  DEPRECATED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  DENIED
+  EXPIRED
+  AUTO_APPROVED
+}
+
+enum PolicyEffect {
+  ALLOW
+  DENY
+  REQUIRE_APPROVAL
+}
+
+model User {
+  id           String           @id @default(uuid())
+  email        String           @unique
+  passwordHash String
+  name         String
+  role         String           @default("viewer")
+  createdAt    DateTime         @default(now())
+  approvals    ApprovalTicket[] @relation("ResolvedBy")
+}
+
+model Agent {
+  id           String           @id @default(uuid())
+  name         String
+  description  String
+  ownerTeam    String
+  llmModel     String
+  riskTier     RiskTier
+  environment  Environment
+  status       AgentStatus      @default(DRAFT)
+  approvedBy   String?
+  tags         String[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  lastActiveAt DateTime?
+  tools        AgentTool[]
+  auditLogs    AuditLog[]
+  approvals    ApprovalTicket[]
+  policies     AgentPolicy[]
+}
+
+model AgentTool {
+  id          String @id @default(uuid())
+  agentId     String
+  name        String
+  description String
+  agent       Agent  @relation(fields: [agentId], references: [id])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  agentId      String
+  traceId      String
+  event        String
+  model        String?
+  toolName     String?
+  inputs       Json?
+  outputs      Json?
+  inputTokens  Int?
+  outputTokens Int?
+  costUsd      Float?
+  latencyMs    Int?
+  success      Boolean  @default(true)
+  errorMsg     String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  agent        Agent    @relation(fields: [agentId], references: [id])
+
+  @@index([agentId])
+  @@index([traceId])
+  @@index([createdAt])
+  @@index([event])
+}
+
+model ApprovalTicket {
+  id           String         @id @default(uuid())
+  agentId      String
+  actionType   String
+  payload      Json
+  riskScore    Float
+  reasoning    String
+  status       ApprovalStatus @default(PENDING)
+  resolvedById String?
+  resolvedAt   DateTime?
+  expiresAt    DateTime
+  slackMsgTs   String?
+  createdAt    DateTime       @default(now())
+  agent        Agent          @relation(fields: [agentId], references: [id])
+  resolvedBy   User?          @relation("ResolvedBy", fields: [resolvedById], references: [id])
+
+  @@index([status])
+  @@index([agentId])
+}
+
+model Policy {
+  id          String        @id @default(uuid())
+  name        String        @unique
+  description String
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  rules       PolicyRule[]
+  agents      AgentPolicy[]
+}
+
+model PolicyRule {
+  id         String       @id @default(uuid())
+  policyId   String
+  actionType String
+  riskTiers  RiskTier[]
+  effect     PolicyEffect
+  conditions Json?
+  policy     Policy       @relation(fields: [policyId], references: [id])
+}
+
+model AgentPolicy {
+  agentId  String
+  policyId String
+  agent    Agent  @relation(fields: [agentId], references: [id])
+  policy   Policy @relation(fields: [policyId], references: [id])
+
+  @@id([agentId, policyId])
+}
