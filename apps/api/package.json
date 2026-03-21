@@ -14,6 +14,7 @@
     "db:generate": "prisma generate"
   },
   "dependencies": {
+    "@agentos/governance-sdk": "*",
     "@agentos/types": "*",
     "@fastify/cors": "^10",
     "@fastify/jwt": "^9",

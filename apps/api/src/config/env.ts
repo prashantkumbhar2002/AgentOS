@@ -13,6 +13,7 @@ const EnvSchema = z.object({
   SLACK_BOT_TOKEN: z.string().optional(),
   SLACK_SIGNING_SECRET: z.string().optional(),
   SLACK_CHANNEL_ID: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
 });
 
 function loadEnv() {
