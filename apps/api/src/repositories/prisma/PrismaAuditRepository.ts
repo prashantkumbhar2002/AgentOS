@@ -34,6 +34,35 @@ export class PrismaAuditRepository implements IAuditRepository {
         return this.toEntry(log);
     }
 
+    async createMany(data: CreateAuditLogInput[]): Promise<number> {
+        const result = await this.prisma.auditLog.createMany({
+            data: data.map((d) => ({
+                agentId: d.agentId,
+                traceId: d.traceId,
+                event: d.event,
+                model: d.model ?? null,
+                toolName: d.toolName ?? null,
+                inputs: d.inputs ?? undefined,
+                outputs: d.outputs ?? undefined,
+                inputTokens: d.inputTokens ?? null,
+                outputTokens: d.outputTokens ?? null,
+                costUsd: d.costUsd,
+                latencyMs: d.latencyMs ?? null,
+                success: d.success ?? true,
+                errorMsg: d.errorMsg ?? null,
+                metadata: d.metadata ?? undefined,
+                createdAt: (d as any).createdAt ?? new Date(),
+            })),
+        });
+        return result.count;
+    }
+
+    async countByAgent(agentIds: string[]): Promise<number> {
+        return this.prisma.auditLog.count({
+            where: { agentId: { in: agentIds } },
+        });
+    }
+
     async findMany(filter: AuditQuery): Promise<AuditQueryResult> {
         const { agentId, traceId, event, success, fromDate, toDate, page, limit } = filter;
 

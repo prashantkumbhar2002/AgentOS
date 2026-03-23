@@ -4,12 +4,18 @@ import { PrismaAuditRepository } from "./repositories/prisma/PrismaAuditReposito
 import { PrismaApprovalRepository } from "./repositories/prisma/PrismaApprovalRepository.js";
 import { PrismaPolicyRepository } from "./repositories/prisma/PrismaPolicyRepository.js";
 import { PrismaAnalyticsRepository } from "./repositories/prisma/PrismaAnalyticsRepository.js";
+import { PrismaUserRepository } from "./repositories/prisma/PrismaUserRepository.js";
 import { AgentService } from "./modules/agents/agents.service.js";
 import { AuditService } from "./modules/audit/audit.service.js";
 import { ApprovalService } from "./modules/approvals/approvals.service.js";
 import { PolicyService } from "./modules/policies/policies.service.js";
 import { PolicyEvaluator } from "./modules/policies/policies.evaluator.js";
 import { AnalyticsService } from "./modules/analytics/analytics.service.js";
+import { UserService } from "./modules/users/users.service.js";
+import type { IAgentRepository } from "./repositories/interfaces/IAgentRepository.js";
+import type { IAuditRepository } from "./repositories/interfaces/IAuditRepository.js";
+import type { IApprovalRepository } from "./repositories/interfaces/IApprovalRepository.js";
+import type { IUserRepository } from "./repositories/interfaces/IUserRepository.js";
 
 export interface ServiceContainer {
     agentService: AgentService;
@@ -18,6 +24,11 @@ export interface ServiceContainer {
     policyService: PolicyService;
     policyEvaluator: PolicyEvaluator;
     analyticsService: AnalyticsService;
+    userService: UserService;
+    agentRepo: IAgentRepository;
+    auditRepo: IAuditRepository;
+    approvalRepo: IApprovalRepository;
+    userRepo: IUserRepository;
 }
 
 export function createContainer(prisma: PrismaClient): ServiceContainer {
@@ -26,6 +37,7 @@ export function createContainer(prisma: PrismaClient): ServiceContainer {
     const approvalRepo = new PrismaApprovalRepository(prisma);
     const policyRepo = new PrismaPolicyRepository(prisma);
     const analyticsRepo = new PrismaAnalyticsRepository(prisma);
+    const userRepo = new PrismaUserRepository(prisma);
 
     const agentService = new AgentService(
         agentRepo,
@@ -38,6 +50,7 @@ export function createContainer(prisma: PrismaClient): ServiceContainer {
     const policyService = new PolicyService(policyRepo, agentRepo);
     const policyEvaluator = new PolicyEvaluator(policyRepo, agentRepo);
     const analyticsService = new AnalyticsService(analyticsRepo);
+    const userService = new UserService(userRepo);
 
     return {
         agentService,
@@ -46,5 +59,10 @@ export function createContainer(prisma: PrismaClient): ServiceContainer {
         policyService,
         policyEvaluator,
         analyticsService,
+        userService,
+        agentRepo,
+        auditRepo,
+        approvalRepo,
+        userRepo,
     };
 }

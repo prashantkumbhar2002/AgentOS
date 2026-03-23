@@ -138,9 +138,7 @@ export default async function agentsRoutes(
                 });
             }
 
-            const agent = await fastify.prisma.agent.findUnique({
-                where: { id: paramsParsed.data.id },
-            });
+            const agent = await agentService.getAgentById(paramsParsed.data.id);
             if (!agent) {
                 return reply.status(404).send({ error: 'Agent not found' });
             }
@@ -203,9 +201,7 @@ export default async function agentsRoutes(
                 });
             }
 
-            const agent = await fastify.prisma.agent.findUnique({
-                where: { id: paramsParsed.data.id },
-            });
+            const agent = await agentService.getAgentById(paramsParsed.data.id);
             if (!agent) {
                 return reply.status(404).send({ error: 'Agent not found' });
             }
@@ -222,10 +218,11 @@ export default async function agentsRoutes(
                 });
             }
 
-            await fastify.prisma.agent.update({
-                where: { id: paramsParsed.data.id },
-                data: { status: 'DEPRECATED' },
-            });
+            await agentService.updateAgentStatus(
+                paramsParsed.data.id,
+                'DEPRECATED' as AgentStatus,
+                request.user.id,
+            );
 
             return reply.status(200).send({
                 id: agent.id,

@@ -41,6 +41,13 @@ export class MockAgentRepository implements IAgentRepository {
         return { data, total, page: filter.page, limit: filter.limit };
     }
 
+    async findByName(name: string): Promise<AgentDetail | null> {
+        for (const agent of this.store.values()) {
+            if (agent.name === name) return agent;
+        }
+        return null;
+    }
+
     async create(data: CreateAgentInput): Promise<AgentDetail> {
         const now = new Date();
         const agent: AgentDetail = {

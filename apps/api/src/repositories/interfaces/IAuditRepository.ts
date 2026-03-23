@@ -3,6 +3,8 @@ import type { AuditLogEntry, AuditLogWithAgent, AuditQueryResult, AuditAgentStat
 
 export interface IAuditRepository {
     create(data: CreateAuditLogInput): Promise<AuditLogEntry>;
+    createMany(data: CreateAuditLogInput[]): Promise<number>;
+    countByAgent(agentIds: string[]): Promise<number>;
     findMany(filter: AuditQuery): Promise<AuditQueryResult>;
     findByTraceId(traceId: string): Promise<AuditLogEntry[]>;
     getAgentStats(agentId: string): Promise<AuditAgentStats>;

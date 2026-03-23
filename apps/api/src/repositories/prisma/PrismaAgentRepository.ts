@@ -67,6 +67,15 @@ export class PrismaAgentRepository implements IAgentRepository {
         return { data, total, page, limit };
     }
 
+    async findByName(name: string): Promise<AgentDetail | null> {
+        const agent = await this.prisma.agent.findFirst({
+            where: { name },
+            include: { tools: true },
+        });
+        if (!agent) return null;
+        return this.toDetail(agent);
+    }
+
     async create(data: CreateAgentInput): Promise<AgentDetail> {
         const agent = await this.prisma.agent.create({
             data: {

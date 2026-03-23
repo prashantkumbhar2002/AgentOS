@@ -11,7 +11,7 @@ import { getRiskLabel } from '../../utils/risk-label.js';
 export default async function approvalRoutes(
     fastify: FastifyInstance,
 ): Promise<void> {
-    const { approvalService, policyEvaluator } = fastify.services;
+    const { approvalService, policyEvaluator, agentService } = fastify.services;
 
     fastify.post(
         '/',
@@ -25,10 +25,8 @@ export default async function approvalRoutes(
                 });
             }
 
-            const agent = await fastify.prisma.agent.findUnique({
-                where: { id: parsed.data.agentId },
-            });
-            if (!agent) {
+            const agentExists = await agentService.getAgentById(parsed.data.agentId);
+            if (!agentExists) {
                 return reply.status(400).send({ error: 'Agent not found' });
             }
 

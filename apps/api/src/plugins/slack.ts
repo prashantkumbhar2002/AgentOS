@@ -70,9 +70,7 @@ export default fp(
                 const slackUser = payload['user'] as Record<string, string> | undefined;
                 const slackUserName = slackUser?.['real_name'] ?? slackUser?.['name'] ?? 'Slack User';
 
-                const platformUser = await fastify.prisma.user.findFirst({
-                    where: { name: { contains: slackUserName } },
-                });
+                const platformUser = await fastify.services.userService.findByNameContains(slackUserName);
 
                 if (!platformUser) {
                     return reply.status(200).send({

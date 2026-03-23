@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import type { ApprovalQuery } from '@agentos/types';
-import type { IApprovalRepository } from '../interfaces/IApprovalRepository.js';
+import type { IApprovalRepository, CreateApprovalInput } from '../interfaces/IApprovalRepository.js';
 import type {
     ApprovalTicketSummary,
     ApprovalTicketDetail,
@@ -11,14 +11,7 @@ import type {
 export class PrismaApprovalRepository implements IApprovalRepository {
     constructor(private readonly prisma: PrismaClient) { }
 
-    async create(data: {
-        agentId: string;
-        actionType: string;
-        payload: unknown;
-        riskScore: number;
-        reasoning: string;
-        expiresAt: Date;
-    }): Promise<ApprovalTicketDetail> {
+    async create(data: CreateApprovalInput): Promise<ApprovalTicketDetail> {
         const ticket = await this.prisma.approvalTicket.create({
             data: {
                 agentId: data.agentId,
@@ -49,6 +42,29 @@ export class PrismaApprovalRepository implements IApprovalRepository {
             slackMsgTs: ticket.slackMsgTs,
             createdAt: ticket.createdAt,
         };
+    }
+
+    async createMany(data: CreateApprovalInput[]): Promise<number> {
+        const result = await this.prisma.approvalTicket.createMany({
+            data: data.map((d) => ({
+                agentId: d.agentId,
+                actionType: d.actionType,
+                payload: d.payload ?? {},
+                riskScore: d.riskScore,
+                reasoning: d.reasoning,
+                expiresAt: d.expiresAt,
+                ...(d.status ? { status: d.status as any } : {}),
+                ...(d.resolvedById ? { resolvedById: d.resolvedById } : {}),
+                ...(d.resolvedAt ? { resolvedAt: d.resolvedAt } : {}),
+            })),
+        });
+        return result.count;
+    }
+
+    async countByAgents(agentIds: string[]): Promise<number> {
+        return this.prisma.approvalTicket.count({
+            where: { agentId: { in: agentIds } },
+        });
     }
 
     async findById(id: string): Promise<ApprovalTicketDetail | null> {

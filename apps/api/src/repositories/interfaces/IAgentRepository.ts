@@ -4,6 +4,7 @@ import type { AgentDetail, AgentSummary, PaginatedResult } from '../../types/dto
 export interface IAgentRepository {
     findById(id: string): Promise<AgentDetail | null>;
     findMany(filter: AgentListQuery): Promise<PaginatedResult<AgentSummary>>;
+    findByName(name: string): Promise<AgentDetail | null>;
     create(data: CreateAgentInput): Promise<AgentDetail>;
     update(id: string, data: UpdateAgentInput): Promise<AgentDetail | null>;
     updateStatus(id: string, status: string, approvedBy?: string): Promise<AgentDetail | null>;

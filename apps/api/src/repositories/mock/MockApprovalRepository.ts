@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ApprovalQuery } from '@agentos/types';
-import type { IApprovalRepository } from '../interfaces/IApprovalRepository.js';
+import type { IApprovalRepository, CreateApprovalInput } from '../interfaces/IApprovalRepository.js';
 import type {
     ApprovalTicketSummary,
     ApprovalTicketDetail,
@@ -11,14 +11,7 @@ import type {
 export class MockApprovalRepository implements IApprovalRepository {
     readonly store = new Map<string, ApprovalTicketDetail>();
 
-    async create(data: {
-        agentId: string;
-        actionType: string;
-        payload: unknown;
-        riskScore: number;
-        reasoning: string;
-        expiresAt: Date;
-    }): Promise<ApprovalTicketDetail> {
+    async create(data: CreateApprovalInput): Promise<ApprovalTicketDetail> {
         const ticket: ApprovalTicketDetail = {
             id: randomUUID(),
             agentId: data.agentId,
@@ -27,16 +20,27 @@ export class MockApprovalRepository implements IApprovalRepository {
             payload: data.payload,
             riskScore: data.riskScore,
             reasoning: data.reasoning,
-            status: 'PENDING',
-            resolvedById: null,
+            status: data.status ?? 'PENDING',
+            resolvedById: data.resolvedById ?? null,
             resolvedByName: null,
-            resolvedAt: null,
+            resolvedAt: data.resolvedAt ?? null,
             expiresAt: data.expiresAt,
             slackMsgTs: null,
             createdAt: new Date(),
         };
         this.store.set(ticket.id, ticket);
         return ticket;
+    }
+
+    async createMany(data: CreateApprovalInput[]): Promise<number> {
+        for (const d of data) {
+            await this.create(d);
+        }
+        return data.length;
+    }
+
+    async countByAgents(agentIds: string[]): Promise<number> {
+        return [...this.store.values()].filter((t) => agentIds.includes(t.agentId)).length;
     }
 
     async findById(id: string): Promise<ApprovalTicketDetail | null> {

@@ -35,6 +35,17 @@ export class MockAuditRepository implements IAuditRepository {
         return entry;
     }
 
+    async createMany(data: CreateAuditLogInput[]): Promise<number> {
+        for (const d of data) {
+            await this.create(d);
+        }
+        return data.length;
+    }
+
+    async countByAgent(agentIds: string[]): Promise<number> {
+        return this.store.filter((e) => agentIds.includes(e.agentId)).length;
+    }
+
     async findMany(filter: AuditQuery): Promise<AuditQueryResult> {
         let filtered = [...this.store];
         if (filter.agentId) filtered = filtered.filter((e) => e.agentId === filter.agentId);

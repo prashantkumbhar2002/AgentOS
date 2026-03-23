@@ -11,7 +11,7 @@ import { calculateCost } from '../../utils/cost-calculator.js';
 export default async function auditRoutes(
     fastify: FastifyInstance,
 ): Promise<void> {
-    const { auditService } = fastify.services;
+    const { auditService, agentService } = fastify.services;
 
     fastify.post(
         '/log',
@@ -37,10 +37,8 @@ export default async function auditRoutes(
                 });
             }
 
-            const agent = await fastify.prisma.agent.findUnique({
-                where: { id: parsed.data.agentId },
-            });
-            if (!agent) {
+            const agentExists = await agentService.getAgentById(parsed.data.agentId);
+            if (!agentExists) {
                 return reply.status(400).send({ error: 'Agent not found' });
             }
 
@@ -135,10 +133,8 @@ export default async function auditRoutes(
                 });
             }
 
-            const agent = await fastify.prisma.agent.findUnique({
-                where: { id: paramsParsed.data.id },
-            });
-            if (!agent) {
+            const agentExists = await agentService.getAgentById(paramsParsed.data.id);
+            if (!agentExists) {
                 return reply.status(404).send({ error: 'Agent not found' });
             }
 
