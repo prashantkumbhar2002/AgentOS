@@ -1,7 +1,7 @@
 # AgentOS — Technical Design Document
 
 **Project**: AgentOS — AI Agent Governance & Management Platform
-**Version**: 2.0.0
+**Version**: 3.0.0
 **Date**: 2026-03-21 (updated)
 **Branch**: `002-jwt-auth-rbac`
 
@@ -17,14 +17,15 @@
 6. [API Reference](#6-api-reference)
 7. [Plugins & Middleware](#7-plugins--middleware)
 8. [Feature Breakdown by EPIC](#8-feature-breakdown-by-epic)
-9. [GovernanceClient SDK](#9-governanceclient-sdk)
-10. [Shared Types Package](#10-shared-types-package)
-11. [Testing Strategy](#11-testing-strategy)
-12. [Security & RBAC](#12-security--rbac)
-13. [Configuration & Environment](#13-configuration--environment)
-14. [Frontend Architecture (EPIC 8)](#14-frontend-architecture-epic-8)
-15. [Constitution & Design Principles](#15-constitution--design-principles)
-16. [Glossary](#16-glossary)
+9. [Repository Pattern & Dependency Injection (FIX-01)](#9-repository-pattern--dependency-injection-fix-01)
+10. [GovernanceClient SDK](#10-governanceclient-sdk)
+11. [Shared Types Package](#11-shared-types-package)
+12. [Testing Strategy](#12-testing-strategy)
+13. [Security & RBAC](#13-security--rbac)
+14. [Configuration & Environment](#14-configuration--environment)
+15. [Frontend Architecture (EPIC 8)](#15-frontend-architecture-epic-8)
+16. [Constitution & Design Principles](#16-constitution--design-principles)
+17. [Glossary](#17-glossary)
 
 ---
 
@@ -47,28 +48,44 @@ The platform consists of a Fastify REST API backend and a React SPA frontend, de
 ## 2. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        API Gateway (Fastify v4)                 │
-│  ┌──────┐ ┌──────┐ ┌───────┐ ┌────────┐ ┌────────┐ ┌─────────┐  │
-│  │ Auth │ │Agents│ │ Audit │ │Approval│ │ Policy │ │Analytics│  │
-│  │Routes│ │Routes│ │Routes │ │ Routes │ │ Routes │ │ Routes  │  │
-│  └──┬───┘ └──┬───┘ └───┬───┘ └───┬────┘ └────┬───┘ └────┬────┘  │
-│     │        │         │         │           │          │       │
-│  ┌──┴────────┴─────────┴─────────┴───────────┴──────────┴───┐   │
-│  │                    Service Layer                         │   │
-│  │  (approvals.service, policies.service, policies.evaluator│   │
-│  │   analytics.service, agents.service)                     │   │
-│  └──────────────────────┬───────────────────────────────────┘   │
-│                         │                                       │
-│  ┌──────────────────────┴───────────────────────────────────┐   │
-│  │                  Prisma ORM (PostgreSQL 16)              │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐    │
-│  │  JWT    │  │  SSE     │  │  BullMQ  │  │  Slack Plugin  │    │
-│  │  Auth   │  │ Realtime │  │  Queue   │  │  Interactions  │    │
-│  └─────────┘  └──────────┘  └──────────┘  └────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                        API Gateway (Fastify v4)                      │
+│  ┌──────┐ ┌──────┐ ┌───────┐ ┌────────┐ ┌────────┐ ┌─────────┐      │
+│  │ Auth │ │Agents│ │ Audit │ │Approval│ │ Policy │ │Analytics│      │
+│  │Routes│ │Routes│ │Routes │ │ Routes │ │ Routes │ │ Routes  │      │
+│  └──┬───┘ └──┬───┘ └───┬───┘ └───┬────┘ └────┬───┘ └────┬────┘      │
+│     │        │         │         │           │          │            │
+│  ┌──┴────────┴─────────┴─────────┴───────────┴──────────┴────────┐   │
+│  │              Service Layer (class-based, injected)             │   │
+│  │  AgentService, AuditService, ApprovalService, PolicyService,  │   │
+│  │  PolicyEvaluator, AnalyticsService                            │   │
+│  └──────────────────────┬────────────────────────────────────────┘   │
+│                         │ (depends on interfaces only)               │
+│  ┌──────────────────────┴────────────────────────────────────────┐   │
+│  │            Repository Interfaces (abstractions)               │   │
+│  │  IAgentRepo, IAuditRepo, IApprovalRepo, IPolicyRepo,         │   │
+│  │  IAnalyticsRepo                                               │   │
+│  └──────────────────────┬────────────────────────────────────────┘   │
+│                         │ (implemented by)                           │
+│  ┌──────────────────────┴────────────────────────────────────────┐   │
+│  │            Prisma Repository Implementations                  │   │
+│  │  PrismaAgentRepo, PrismaAuditRepo, PrismaApprovalRepo,       │   │
+│  │  PrismaPolicyRepo, PrismaAnalyticsRepo                        │   │
+│  └──────────────────────┬────────────────────────────────────────┘   │
+│                         │                                            │
+│  ┌──────────────────────┴────────────────────────────────────────┐   │
+│  │                  Prisma ORM (PostgreSQL 16)                   │   │
+│  └───────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌───────────────┐                                                   │
+│  │ container.ts  │ ← Composition Root: wires repos → services        │
+│  └───────────────┘                                                   │
+│                                                                      │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐         │
+│  │  JWT    │  │  SSE     │  │  BullMQ  │  │  Slack Plugin  │         │
+│  │  Auth   │  │ Realtime │  │  Queue   │  │  Interactions  │         │
+│  └─────────┘  └──────────┘  └──────────┘  └────────────────┘         │
+└──────────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────┐     ┌───────────────────────────────┐
 │  GovernanceClient SDK    │────▶│  Showcase Agents              │
@@ -84,9 +101,11 @@ The platform consists of a Fastify REST API backend and a React SPA frontend, de
 2. Fastify rate limiter checks request count
 3. `authenticate` or `requireRole` preHandler validates JWT and RBAC
 4. Zod schema validates request body/query/params
-5. Service layer executes business logic via Prisma
-6. SSE broadcast for real-time events (approvals created/resolved)
-7. BullMQ enqueues background jobs (Slack notifications)
+5. Route handler calls service from `fastify.services.*` (injected via DI container)
+6. Service executes business logic, delegates data access to repository interfaces
+7. Prisma repository implementation executes actual database queries
+8. SSE broadcast for real-time events (approvals created/resolved)
+9. BullMQ enqueues background jobs (Slack notifications)
 
 ### Governance Flow (for AI Agents)
 
@@ -155,19 +174,39 @@ AgentOS/
 │       └── src/
 │           ├── config/
 │           │   └── env.ts            # Zod-validated environment config
+│           ├── types/
+│           │   └── dto.ts            # All service return DTOs (typed, no unknown)
+│           ├── repositories/
+│           │   ├── interfaces/       # Repository abstractions
+│           │   │   ├── IAgentRepository.ts
+│           │   │   ├── IAuditRepository.ts
+│           │   │   ├── IApprovalRepository.ts
+│           │   │   ├── IPolicyRepository.ts
+│           │   │   └── IAnalyticsRepository.ts
+│           │   ├── prisma/           # Prisma implementations
+│           │   │   ├── PrismaAgentRepository.ts
+│           │   │   ├── PrismaAuditRepository.ts
+│           │   │   ├── PrismaApprovalRepository.ts
+│           │   │   ├── PrismaPolicyRepository.ts
+│           │   │   └── PrismaAnalyticsRepository.ts
+│           │   └── mock/             # In-memory mocks for unit testing
+│           │       ├── MockAgentRepository.ts
+│           │       ├── MockAuditRepository.ts
+│           │       ├── MockApprovalRepository.ts
+│           │       └── MockPolicyRepository.ts
 │           ├── plugins/
 │           │   ├── auth.ts           # JWT + RBAC middleware
-│           │   ├── prisma.ts         # PrismaClient singleton
+│           │   ├── prisma.ts         # PrismaClient singleton + ServiceContainer
 │           │   ├── sse.ts            # SSE fan-out manager
 │           │   ├── bullmq.ts         # BullMQ notification queue
 │           │   └── slack.ts          # Slack interactive endpoint
 │           ├── modules/
 │           │   ├── users/            # Auth (login, refresh, me)
-│           │   ├── agents/           # Agent CRUD + lifecycle
-│           │   ├── audit/            # Audit log ingestion + query
-│           │   ├── approvals/        # Approval ticket lifecycle
-│           │   ├── policies/         # Policy CRUD + evaluation
-│           │   ├── analytics/        # Cost + usage analytics
+│           │   ├── agents/           # Agent CRUD + lifecycle (class-based service)
+│           │   ├── audit/            # Audit log ingestion + query (class-based service)
+│           │   ├── approvals/        # Approval ticket lifecycle (class-based service)
+│           │   ├── policies/         # Policy CRUD + evaluation (class-based service)
+│           │   ├── analytics/        # Cost + usage analytics (class-based service)
 │           │   └── showcase/         # Demo agent trigger routes
 │           ├── showcase-agents/
 │           │   ├── emailDraftAgent.ts   # Claude-powered email agent
@@ -179,6 +218,7 @@ AgentOS/
 │           │   └── cost-calculator.ts # Per-model cost calculation
 │           ├── workers/
 │           │   └── notification.worker.ts  # BullMQ Slack worker
+│           ├── container.ts          # DI composition root (wires repos → services)
 │           ├── app.ts               # Fastify app factory
 │           └── server.ts            # Entry point
 │   └── web/                          # React Dashboard (SPA)
@@ -218,7 +258,8 @@ AgentOS/
 │   ├── 006-policy-engine/
 │   ├── 007-analytics-cost-tracking/
 │   ├── 008-showcase-agents/
-│   └── 009-react-dashboard/
+│   ├── 009-react-dashboard/
+│   └── 010-repository-pattern/      # FIX-01: Repository pattern refactor
 └── docs/
     └── TECHNICAL_DESIGN.md          # This document
 ```
@@ -454,7 +495,8 @@ All endpoints (except `/api/auth/login` and `/api/health`) require `Authorizatio
 
 ### Prisma Plugin (`plugins/prisma.ts`)
 - Creates a singleton `PrismaClient` with dev-mode query logging
-- Decorates `fastify.prisma` for use in all route handlers
+- Decorates `fastify.prisma` for use in route handlers
+- Augments `FastifyInstance` with `services: ServiceContainer` (injected via `container.ts`)
 - Disconnects on server close
 
 ### SSE Plugin (`plugins/sse.ts`)
@@ -592,11 +634,159 @@ Production-grade React SPA covering the full platform:
 
 **Key implementation files**: `api.ts`, `queryClient.ts`, `useAuthStore.ts`, `useSSE.ts`, `App.tsx`, all `pages/*.tsx`
 
+### FIX-01 — Repository Pattern + Unit-Testable Business Logic
+
+| Aspect | Detail |
+|--------|--------|
+| **Scope** | Backend architecture refactor |
+| **Tasks** | 40 (R01–R40 across 6 phases) |
+| **Files Created** | 19 new files |
+| **Files Modified** | 13 existing files |
+| **Unit Tests Added** | 54 (mock-based, no DB) |
+
+Introduced a clean separation between business logic and data access:
+
+1. **Repository Interfaces** — 6 abstraction interfaces (`IUserRepository`, `IAgentRepository`, `IAuditRepository`, `IApprovalRepository`, `IPolicyRepository`, `IAnalyticsRepository`) defining all data access contracts
+2. **Prisma Implementations** — 6 concrete classes wrapping all Prisma queries behind the interfaces
+3. **Service Refactor** — All 7 service/evaluator files converted from standalone functions to classes accepting repository interfaces via constructor injection (including `UserService`)
+4. **DI Composition Root** — `container.ts` wires Prisma repos into service constructors; `fastify.decorate('services', container)` exposes them to routes
+5. **Mock Repositories** — 4 in-memory Map-based mocks for pure unit testing without database
+6. **Unit Tests** — 72 tests across 7 files running in ~90ms, validating all business logic without any DB or network dependency
+7. **Full Prisma Isolation** — Zero `fastify.prisma` calls in any route, service, plugin, or showcase file
+
+**Key results**:
+- Zero `@prisma/client` imports in any service or route file
+- Zero `fastify.prisma` usages in any route file (only in `app.ts` for container creation)
+- Zero `Promise<unknown>` return types
+- All service methods return typed DTOs defined in `types/dto.ts`
+- Route handlers access services via `fastify.services.*` (type-safe Fastify decorator)
+- Showcase/mock agents, Slack plugin, and notification worker all use repositories
+
+**Key implementation files**: `container.ts`, `types/dto.ts`, `repositories/interfaces/*`, `repositories/prisma/*`, `repositories/mock/*`, all `*.service.ts`, all `*.unit.test.ts`
+
 ---
 
-## 9. GovernanceClient SDK
+## 9. Repository Pattern & Dependency Injection (FIX-01)
+
+### 9.1 Motivation
+
+Before FIX-01, all service functions directly accepted `PrismaClient` as a parameter. This made services tightly coupled to the database layer — every unit test required a live PostgreSQL connection, making tests slow (~3-5s per file) and fragile.
+
+After FIX-01, services depend only on repository interfaces. Business logic is fully testable with in-memory mock repositories that run in milliseconds.
+
+### 9.2 Repository Interfaces
+
+All interfaces live in `apps/api/src/repositories/interfaces/`:
+
+| Interface | Key Methods |
+|-----------|-------------|
+| `IUserRepository` | `findByEmail`, `findById`, `findByRole`, `findByNameContains`, `create` |
+| `IAgentRepository` | `findById`, `findMany`, `findByName`, `create`, `update`, `updateStatus`, `exists`, `updateLastActiveAt` |
+| `IAuditRepository` | `create`, `createMany`, `countByAgent`, `findMany`, `findByTraceId`, `getAgentStats`, `exportRows` |
+| `IApprovalRepository` | `create`, `createMany`, `countByAgents`, `findById`, `findMany`, `resolve`, `expireStale`, `updateSlackMsgTs`, `getPendingCount` |
+| `IPolicyRepository` | `create`, `findById`, `findMany`, `update`, `delete`, `findByName`, `getAssignedAgentCount`, `assign`, `unassign`, `findAssignment`, `getAgentPoliciesWithRules`, `getGlobalPoliciesWithRules` |
+| `IAnalyticsRepository` | `getCostAggregates`, `getCostByAgentByDay`, `getUsageCounts`, `getApprovalCountsByStatus`, `getAgentMetrics`, `getModelMetrics` |
+
+### 9.3 DTOs (`types/dto.ts`)
+
+All service methods return explicitly typed DTOs — no `unknown`, no `any`, no raw Prisma types leaking to route handlers.
+
+Key DTOs include: `AgentSummary`, `AgentDetail`, `AuditLogEntry`, `ApprovalTicketSummary`, `ApprovalTicketDetail`, `PolicyDetail`, `PolicyWithRules`, `CostAggregate`, `UsageCount`, `AgentMetric`, `ModelMetric`, `PaginatedResult<T>`.
+
+### 9.4 Service Classes
+
+All 6 services are now class-based with constructor injection:
+
+| Service | Constructor Dependencies |
+|---------|------------------------|
+| `UserService` | `IUserRepository` |
+| `AgentService` | `IAgentRepository`, `IAuditRepository`, `IApprovalRepository`, `IPolicyRepository` |
+| `AuditService` | `IAuditRepository`, `IAgentRepository` |
+| `ApprovalService` | `IApprovalRepository` |
+| `PolicyService` | `IPolicyRepository`, `IAgentRepository` |
+| `PolicyEvaluator` | `IPolicyRepository`, `IAgentRepository` |
+| `AnalyticsService` | `IAnalyticsRepository` |
+
+Services contain only business logic: validation, status transitions, cost calculations, health scores, policy evaluation priority, date-filling, CSV generation, etc.
+
+### 9.5 Composition Root (`container.ts`)
+
+```typescript
+export function createContainer(prisma: PrismaClient): ServiceContainer {
+  const agentRepo = new PrismaAgentRepository(prisma);
+  const auditRepo = new PrismaAuditRepository(prisma);
+  const approvalRepo = new PrismaApprovalRepository(prisma);
+  const policyRepo = new PrismaPolicyRepository(prisma);
+  const analyticsRepo = new PrismaAnalyticsRepository(prisma);
+  const userRepo = new PrismaUserRepository(prisma);
+
+  const agentService = new AgentService(agentRepo, auditRepo, approvalRepo, policyRepo);
+  const auditService = new AuditService(auditRepo, agentRepo);
+  const approvalService = new ApprovalService(approvalRepo);
+  const policyService = new PolicyService(policyRepo, agentRepo);
+  const policyEvaluator = new PolicyEvaluator(policyRepo, agentRepo);
+  const analyticsService = new AnalyticsService(analyticsRepo);
+  const userService = new UserService(userRepo);
+
+  return {
+    agentService, auditService, approvalService, policyService,
+    policyEvaluator, analyticsService, userService,
+    agentRepo, auditRepo, approvalRepo, userRepo,
+  };
+}
+```
+
+The container is created in `app.ts` after the Prisma plugin registers and exposed via `fastify.decorate('services', container)`. Route handlers access services as `fastify.services.agentService`, etc. Raw repository references are also exposed for showcase agents and the mock data seeder.
+
+### 9.6 Route Wiring Pattern
+
+Before (direct Prisma):
+```typescript
+fastify.get('/agents', async (request, reply) => {
+  const agents = await listAgents(fastify.prisma, request.query);
+  return agents;
+});
+```
+
+After (DI container):
+```typescript
+fastify.get('/agents', async (request, reply) => {
+  const { agentService } = fastify.services;
+  const agents = await agentService.listAgents(request.query);
+  return agents;
+});
+```
+
+### 9.7 Mock Repositories for Testing
+
+4 in-memory mock implementations (`repositories/mock/`), each using a `Map<string, T>` as the backing store. They implement the full repository interface and support pre-loading test data.
+
+```typescript
+const agentRepo = new MockAgentRepository();
+const auditRepo = new MockAuditRepository();
+const service = new AgentService(agentRepo, auditRepo, ...);
+// Tests run in ~1ms per assertion — no DB, no network
+```
+
+### 9.8 Before/After Comparison
+
+| Aspect | Before (FIX-01) | After (FIX-01) |
+|--------|-----------------|----------------|
+| **Service style** | Standalone functions taking `PrismaClient` | Classes with constructor-injected interfaces |
+| **Data access** | Direct `prisma.agent.findMany()` in services | `this.agentRepo.findMany()` via interface |
+| **Return types** | Raw Prisma types (`any`, `unknown`) | Typed DTOs (`AgentSummary`, `AgentDetail`, etc.) |
+| **Unit testability** | Required live PostgreSQL | In-memory mocks, ~90ms for 72 tests |
+| **Route coupling** | Routes imported service functions + `fastify.prisma` | Routes access `fastify.services.*` only |
+| **Wiring** | Ad-hoc per route file | Single composition root (`container.ts`) |
+| **`fastify.prisma` in routes** | 12 direct usages across 6 route files | 0 usages (only in `app.ts` for container creation) |
+
+---
+
+## 10. GovernanceClient SDK
 
 The SDK (`packages/governance-sdk`) is the interface between AI agents and the AgentOS platform. Every agent action flows through this client.
+
+> **Note**: The GovernanceClient SDK is not affected by the FIX-01 refactor — it communicates with the API via HTTP, independent of internal architecture.
 
 ### Configuration
 
@@ -625,7 +815,7 @@ interface GovernanceClientConfig {
 
 ---
 
-## 10. Shared Types Package
+## 11. Shared Types Package
 
 `packages/types` contains all Zod schemas and inferred TypeScript types, organized by domain. No type definitions are duplicated in `apps/`.
 
@@ -644,7 +834,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 
 ---
 
-## 11. Testing Strategy
+## 12. Testing Strategy
 
 ### Framework
 
@@ -661,20 +851,26 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 | `audit.test.ts` | Integration | 16 | Audit log ingestion, query, CSV export, traces |
 | `approvals.test.ts` | Integration | 18 | Approval lifecycle, decide, policy evaluation |
 | `policies.test.ts` | Integration | 20 | Policy CRUD, assign/unassign, evaluate |
-| `policies.evaluator.test.ts` | Service | 11 | Pure evaluator: DENY/ALLOW/REQUIRE, wildcards, priority |
+| `policies.evaluator.test.ts` | Service | 11 | Evaluator: DENY/ALLOW/REQUIRE, wildcards, priority (Prisma-backed) |
 | `analytics.test.ts` | Integration | 16 | All 5 analytics endpoints |
-| `analytics.service.test.ts` | Service | 17 | Aggregation functions, date ranges, sorting |
+| `analytics.service.test.ts` | Service | 17 | Aggregation functions, date ranges, sorting (Prisma-backed) |
 | `health-score.test.ts` | Unit | 10 | Health score weighting, bounds |
 | `cost-calculator.test.ts` | Unit | 8 | Per-model cost calculation |
 | `GovernanceClient.test.ts` | Unit | 6 | SDK methods, mocked fetch |
+| `agents.service.unit.test.ts` | Unit (mock) | 15 | AgentService: status transitions, CRUD, pagination, stats |
+| `audit.service.unit.test.ts` | Unit (mock) | 7 | AuditService: createLog, queryLogs, traces, stats, CSV |
+| `approvals.service.unit.test.ts` | Unit (mock) | 10 | ApprovalService: create, resolve, expire, list |
+| `policies.service.unit.test.ts` | Unit (mock) | 11 | PolicyService: CRUD, assign, duplicate guard, delete guard |
+| `policies.evaluator.unit.test.ts` | Unit (mock) | 11 | PolicyEvaluator: DENY wins, REQUIRE default, wildcards, conditions |
 
-**Total: 11 test files, 160 test cases**
+**Total: 16 test files, 214 test cases**
 
 ### Test Categories
 
 - **Integration tests** (7 files, 108 cases): Use Supertest against the full Fastify app with a real test database. Each test file seeds its own data and cleans up.
-- **Service tests** (2 files, 28 cases): Test business logic against Prisma with a real database but no HTTP layer.
-- **Unit tests** (3 files, 24 cases): Pure function tests with mocked dependencies.
+- **Service tests** (2 files, 28 cases): Test business logic with Prisma repository implementations against a real database but no HTTP layer.
+- **Unit tests — mock repos** (5 files, 54 cases): Pure business logic tests using in-memory mock repositories. No database, no network. Run in ~89ms total. *(Added in FIX-01)*
+- **Unit tests — pure functions** (3 files, 24 cases): Pure function tests (health score, cost calculator, SDK).
 
 ### Test Isolation
 
@@ -684,7 +880,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 
 ---
 
-## 12. Security & RBAC
+## 13. Security & RBAC
 
 ### Authentication
 
@@ -727,7 +923,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 
 ---
 
-## 13. Configuration & Environment
+## 14. Configuration & Environment
 
 ### Required Variables
 
@@ -763,9 +959,9 @@ Running `npx prisma db seed` creates:
 
 ---
 
-## 14. Frontend Architecture (EPIC 8)
+## 15. Frontend Architecture (EPIC 8)
 
-### 14.1 Tech Stack & Build
+### 15.1 Tech Stack & Build
 
 | Concern | Choice |
 |---------|--------|
@@ -781,7 +977,7 @@ Running `npx prisma db seed` creates:
 | **Dates** | date-fns (formatDistanceToNow, format) |
 | **Utilities** | clsx + tailwind-merge (via `cn()` helper) |
 
-### 14.2 Project Structure
+### 15.2 Project Structure
 
 ```
 apps/web/src/
@@ -825,7 +1021,7 @@ apps/web/src/
 └── main.tsx              Entry point
 ```
 
-### 14.3 Data Flow Architecture
+### 15.3 Data Flow Architecture
 
 ```
 User Action → Component → useMutation/useQuery (TanStack)
@@ -850,7 +1046,7 @@ useSSE hook → EventSource(GET /api/events/stream?token=JWT)
            Component auto-refetches via TanStack Query
 ```
 
-### 14.4 State Management
+### 15.4 State Management
 
 **Server State (TanStack Query)**:
 - `staleTime: 30s` — data considered fresh for 30 seconds
@@ -869,7 +1065,7 @@ useSSE hook → EventSource(GET /api/events/stream?token=JWT)
 - On `login()`: calls `POST /api/auth/login`, stores token, fetches `GET /api/auth/me`
 - On `logout()`: clears state, redirects to `/login`
 
-### 14.5 Authentication Flow
+### 15.5 Authentication Flow
 
 1. User submits email/password on `LoginPage`
 2. `useAuthStore.login()` calls `POST /api/auth/login` → receives JWT
@@ -878,7 +1074,7 @@ useSSE hook → EventSource(GET /api/events/stream?token=JWT)
 5. On any 401 response: interceptor calls `logout()`, redirects to `/login`
 6. `ProtectedRoute` component checks `isAuthenticated`, redirects unauthenticated users
 
-### 14.6 SSE (Server-Sent Events) Integration
+### 15.6 SSE (Server-Sent Events) Integration
 
 The `useSSE` hook provides live updates across the dashboard:
 
@@ -890,7 +1086,7 @@ The `useSSE` hook provides live updates across the dashboard:
 
 **Reconnection Strategy**: Exponential backoff starting at 2s, doubling each attempt, capped at 30s. Event buffer limited to 50 entries (FIFO).
 
-### 14.7 Routing
+### 15.7 Routing
 
 | Path | Page | Auth Required | Role |
 |------|------|--------------|------|
@@ -905,7 +1101,7 @@ The `useSSE` hook provides live updates across the dashboard:
 
 Admin-only features (edit agent, register agent, export CSV) are conditionally rendered based on `user.role`.
 
-### 14.8 Color System
+### 15.8 Color System
 
 **Agent Status**:
 | Status | Color | Tailwind Class |
@@ -933,7 +1129,7 @@ Admin-only features (edit agent, register agent, export CSV) are conditionally r
 | approval_resolved | Green | CheckCircle |
 | action_blocked | Red | XCircle |
 
-### 14.9 Page Details
+### 15.9 Page Details
 
 **Dashboard** — 3-panel layout:
 - Top: 4 StatCards (Total Agents, Active Agents, Pending Approvals with pulse, Today's Cost)
@@ -971,13 +1167,13 @@ Admin-only features (edit agent, register agent, export CSV) are conditionally r
 **Policies** — Read-only list:
 - Expandable policy cards showing rules, action types, risk tiers, effects
 
-### 14.10 shadcn/ui Components Used
+### 15.10 shadcn/ui Components Used
 
 28 primitives installed and configured with dark theme:
 
 `Accordion`, `AlertDialog`, `Badge`, `Button`, `Card`, `Checkbox`, `Collapsible`, `Command`, `Dialog`, `DropdownMenu`, `Form`, `Input`, `Label`, `Popover`, `Progress`, `RadioGroup`, `ScrollArea`, `Select`, `Separator`, `Sheet`, `Skeleton`, `Sonner (Toaster)`, `Switch`, `Table`, `Tabs`, `Textarea`, `Toggle`, `Tooltip`
 
-### 14.11 API Client Functions
+### 15.11 API Client Functions
 
 `apps/web/src/lib/api.ts` exports typed functions organized by module:
 
@@ -993,7 +1189,7 @@ Admin-only features (edit agent, register agent, export CSV) are conditionally r
 
 ---
 
-## 15. Constitution & Design Principles
+## 16. Constitution & Design Principles
 
 The project follows 8 non-negotiable principles defined in the constitution:
 
@@ -1003,17 +1199,20 @@ The project follows 8 non-negotiable principles defined in the constitution:
 - Shared schemas in `packages/types` with `*Schema` naming convention
 - Environment variables validated on startup
 
-### II. Prisma-Exclusive Data Access
+### II. Prisma-Exclusive Data Access (via Repository Pattern)
 - No raw SQL or alternative ORMs
 - PascalCase model names
 - Migrations via `prisma migrate dev` (never `db push` in production)
 - PostgreSQL 16 only
+- All Prisma access encapsulated in repository implementations — services never import `@prisma/client` directly
+- Business logic services depend on repository interfaces for testability
 
 ### III. Test-Driven Quality Gates
 - Every route has happy-path + error Supertest integration tests
-- Business logic unit-tested with Vitest
+- Business logic unit-tested with Vitest using mock repositories (no DB required)
 - External services mocked in tests
-- Isolated test database with transactional cleanup
+- Isolated test database with transactional cleanup for integration tests
+- 54 pure unit tests run in ~89ms; 160 total integration/service tests with DB
 
 ### IV. Security-First
 - Rate limits on all endpoints (100/min global, 10/15min on login)
@@ -1043,7 +1242,7 @@ The project follows 8 non-negotiable principles defined in the constitution:
 
 ---
 
-## 16. Glossary
+## 17. Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -1064,7 +1263,14 @@ The project follows 8 non-negotiable principles defined in the constitution:
 | **Query Key Factory** | Pattern for generating consistent TanStack Query cache keys per domain |
 | **Protected Route** | React Router wrapper that redirects unauthenticated users to /login |
 | **useSSE Hook** | Custom React hook managing EventSource connection with reconnection logic |
+| **Repository Interface** | Abstraction defining data access methods; services depend on interfaces, not implementations |
+| **Prisma Repository** | Concrete implementation of a repository interface using Prisma ORM queries |
+| **Mock Repository** | In-memory Map-based implementation of a repository interface for unit testing |
+| **Composition Root** | `container.ts` — the single place where all repositories and services are wired together |
+| **Service Container** | TypeScript interface exposing all service instances; decorated on `fastify.services` |
+| **DTO** | Data Transfer Object — typed return structure from services to routes (no raw Prisma types) |
+| **Constructor Injection** | Pattern where dependencies are passed to a class constructor rather than imported globally |
 
 ---
 
-*Document generated from codebase analysis on 2026-03-21. Covers EPICs 2, 4, 5, 6, 7, 8.*
+*Document generated from codebase analysis on 2026-03-21. Updated 2026-03-21 with FIX-01 (Repository Pattern). Covers EPICs 2, 4, 5, 6, 7, 8 + FIX-01.*
