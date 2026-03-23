@@ -1,152 +1,84 @@
-import { Prisma } from '@prisma/client';
-import type { PrismaClient } from '@prisma/client';
 import type { CreatePolicyInput, UpdatePolicyInput, PolicyListQuery } from '@agentos/types';
+import type { IPolicyRepository } from '../../repositories/interfaces/IPolicyRepository.js';
+import type { IAgentRepository } from '../../repositories/interfaces/IAgentRepository.js';
+import type { PolicyDetail, PaginatedResult } from '../../types/dto.js';
 
-export async function createPolicy(prisma: PrismaClient, data: CreatePolicyInput) {
-  const existing = await prisma.policy.findUnique({ where: { name: data.name } });
-  if (existing) {
-    throw new Error('Policy name already exists');
-  }
+export class PolicyService {
+    constructor(
+        private readonly policyRepo: IPolicyRepository,
+        private readonly agentRepo: IAgentRepository,
+    ) { }
 
-  return prisma.policy.create({
-    data: {
-      name: data.name,
-      description: data.description,
-      rules: {
-        create: data.rules.map((r) => ({
-          actionType: r.actionType,
-          riskTiers: r.riskTiers,
-          effect: r.effect,
-          conditions: r.conditions
-            ? (r.conditions as Prisma.InputJsonValue)
-            : Prisma.JsonNull,
-        })),
-      },
-    },
-    include: { rules: true },
-  });
-}
-
-export async function listPolicies(prisma: PrismaClient, query: PolicyListQuery) {
-  const { isActive, page, limit } = query;
-
-  const where: Record<string, unknown> = {};
-  if (isActive !== undefined) where['isActive'] = isActive;
-
-  const [data, total] = await Promise.all([
-    prisma.policy.findMany({
-      where,
-      skip: (page - 1) * limit,
-      take: limit,
-      orderBy: { createdAt: 'desc' },
-      include: { rules: true },
-    }),
-    prisma.policy.count({ where }),
-  ]);
-
-  return { data, total, page, limit };
-}
-
-export async function getPolicyById(prisma: PrismaClient, id: string) {
-  const policy = await prisma.policy.findUnique({
-    where: { id },
-    include: {
-      rules: true,
-      agents: {
-        include: {
-          agent: { select: { id: true, name: true } },
-        },
-      },
-    },
-  });
-
-  if (!policy) return null;
-
-  return {
-    ...policy,
-    agents: policy.agents.map((a) => ({
-      agentId: a.agent.id,
-      agentName: a.agent.name,
-    })),
-  };
-}
-
-export async function updatePolicy(
-  prisma: PrismaClient,
-  id: string,
-  data: UpdatePolicyInput,
-) {
-  const existing = await prisma.policy.findUnique({ where: { id } });
-  if (!existing) return null;
-
-  if (data.name && data.name !== existing.name) {
-    const nameConflict = await prisma.policy.findUnique({ where: { name: data.name } });
-    if (nameConflict) {
-      throw new Error('Policy name already exists');
+    async createPolicy(data: CreatePolicyInput): Promise<PolicyDetail> {
+        const existing = await this.policyRepo.findByName(data.name);
+        if (existing) {
+            throw new Error('Policy name already exists');
+        }
+        return this.policyRepo.create(data);
     }
-  }
 
-  return prisma.policy.update({
-    where: { id },
-    data,
-    include: { rules: true },
-  });
-}
+    async listPolicies(query: PolicyListQuery): Promise<PaginatedResult<PolicyDetail>> {
+        return this.policyRepo.findMany(query);
+    }
 
-export async function deletePolicy(prisma: PrismaClient, id: string) {
-  const policy = await prisma.policy.findUnique({
-    where: { id },
-    include: { _count: { select: { agents: true } } },
-  });
+    async getPolicyById(id: string): Promise<PolicyDetail | null> {
+        return this.policyRepo.findById(id);
+    }
 
-  if (!policy) return null;
+    async updatePolicy(id: string, data: UpdatePolicyInput): Promise<PolicyDetail | null> {
+        const existing = await this.policyRepo.findById(id);
+        if (!existing) return null;
 
-  if (policy._count.agents > 0) {
-    throw new Error(
-      `Cannot delete policy assigned to ${policy._count.agents} agents. Unassign first.`,
-    );
-  }
+        if (data.name && data.name !== existing.name) {
+            const nameConflict = await this.policyRepo.findByName(data.name);
+            if (nameConflict) {
+                throw new Error('Policy name already exists');
+            }
+        }
 
-  await prisma.policyRule.deleteMany({ where: { policyId: id } });
-  await prisma.policy.delete({ where: { id } });
+        return this.policyRepo.update(id, data);
+    }
 
-  return { id, deleted: true };
-}
+    async deletePolicy(id: string): Promise<{ id: string; deleted: boolean } | null> {
+        const existing = await this.policyRepo.findById(id);
+        if (!existing) return null;
 
-export async function assignToAgent(
-  prisma: PrismaClient,
-  policyId: string,
-  agentId: string,
-) {
-  const policy = await prisma.policy.findUnique({ where: { id: policyId } });
-  if (!policy) throw new Error('Policy not found');
+        const assignedCount = await this.policyRepo.getAssignedAgentCount(id);
+        if (assignedCount > 0) {
+            throw new Error(
+                `Cannot delete policy assigned to ${assignedCount} agents. Unassign first.`,
+            );
+        }
 
-  const agent = await prisma.agent.findUnique({ where: { id: agentId } });
-  if (!agent) throw new Error('Agent not found');
+        await this.policyRepo.delete(id);
+        return { id, deleted: true };
+    }
 
-  const existing = await prisma.agentPolicy.findUnique({
-    where: { agentId_policyId: { agentId, policyId } },
-  });
-  if (existing) throw new Error('Policy already assigned to this agent');
+    async assignToAgent(
+        policyId: string,
+        agentId: string,
+    ): Promise<{ policyId: string; agentId: string; assigned: boolean }> {
+        const policyExists = await this.policyRepo.findById(policyId);
+        if (!policyExists) throw new Error('Policy not found');
 
-  await prisma.agentPolicy.create({ data: { agentId, policyId } });
+        const agentExists = await this.agentRepo.exists(agentId);
+        if (!agentExists) throw new Error('Agent not found');
 
-  return { policyId, agentId, assigned: true };
-}
+        const alreadyAssigned = await this.policyRepo.findAssignment(policyId, agentId);
+        if (alreadyAssigned) throw new Error('Policy already assigned to this agent');
 
-export async function unassignFromAgent(
-  prisma: PrismaClient,
-  policyId: string,
-  agentId: string,
-) {
-  const existing = await prisma.agentPolicy.findUnique({
-    where: { agentId_policyId: { agentId, policyId } },
-  });
-  if (!existing) throw new Error('Assignment not found');
+        await this.policyRepo.assignToAgent(policyId, agentId);
+        return { policyId, agentId, assigned: true };
+    }
 
-  await prisma.agentPolicy.delete({
-    where: { agentId_policyId: { agentId, policyId } },
-  });
+    async unassignFromAgent(
+        policyId: string,
+        agentId: string,
+    ): Promise<{ policyId: string; agentId: string; unassigned: boolean }> {
+        const exists = await this.policyRepo.findAssignment(policyId, agentId);
+        if (!exists) throw new Error('Assignment not found');
 
-  return { policyId, agentId, unassigned: true };
+        await this.policyRepo.unassignFromAgent(policyId, agentId);
+        return { policyId, agentId, unassigned: true };
+    }
 }

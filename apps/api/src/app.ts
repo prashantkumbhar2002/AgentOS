@@ -13,6 +13,7 @@ import approvalRoutes from './modules/approvals/approvals.routes.js';
 import policyRoutes from './modules/policies/policies.routes.js';
 import analyticsRoutes from './modules/analytics/analytics.routes.js';
 import showcaseRoutes from './modules/showcase/showcase.routes.js';
+import { createContainer } from './container.js';
 import { env } from './config/env.js';
 
 export async function buildApp() {
@@ -36,6 +37,10 @@ export async function buildApp() {
   });
 
   await fastify.register(prismaPlugin);
+
+  const container = createContainer(fastify.prisma);
+  fastify.decorate('services', container);
+
   await fastify.register(authPlugin);
   await fastify.register(ssePlugin);
   await fastify.register(bullmqPlugin);

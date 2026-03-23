@@ -1,147 +1,68 @@
-import type { PrismaClient } from '@prisma/client';
 import type { CreateApprovalInput, ApprovalQuery } from '@agentos/types';
-
+import type { IApprovalRepository } from '../../repositories/interfaces/IApprovalRepository.js';
+import type {
+    ApprovalTicketDetail,
+    ApprovalListResult,
+} from '../../types/dto.js';
 
 const EXPIRATION_MINUTES = 30;
 
-export async function createTicket(
-  prisma: PrismaClient,
-  data: CreateApprovalInput,
-) {
-  const expiresAt = new Date(Date.now() + EXPIRATION_MINUTES * 60 * 1000);
+export class ApprovalService {
+    constructor(
+        private readonly approvalRepo: IApprovalRepository,
+    ) { }
 
-  return prisma.approvalTicket.create({
-    data: {
-      agentId: data.agentId,
-      actionType: data.actionType,
-      payload: data.payload ?? {},
-      riskScore: data.riskScore,
-      reasoning: data.reasoning,
-      expiresAt,
-    },
-    include: {
-      agent: { select: { name: true } },
-    },
-  });
-}
+    async createTicket(data: CreateApprovalInput): Promise<ApprovalTicketDetail> {
+        const expiresAt = new Date(Date.now() + EXPIRATION_MINUTES * 60 * 1000);
 
-export async function getTicket(prisma: PrismaClient, ticketId: string) {
-  const ticket = await prisma.approvalTicket.findUnique({
-    where: { id: ticketId },
-    include: {
-      agent: { select: { name: true } },
-      resolvedBy: { select: { name: true } },
-    },
-  });
+        return this.approvalRepo.create({
+            agentId: data.agentId,
+            actionType: data.actionType,
+            payload: data.payload ?? {},
+            riskScore: data.riskScore,
+            reasoning: data.reasoning,
+            expiresAt,
+        });
+    }
 
-  if (!ticket) return null;
+    async getTicket(ticketId: string): Promise<ApprovalTicketDetail | null> {
+        return this.approvalRepo.findById(ticketId);
+    }
 
-  return {
-    id: ticket.id,
-    agentId: ticket.agentId,
-    agentName: ticket.agent.name,
-    actionType: ticket.actionType,
-    payload: ticket.payload,
-    riskScore: ticket.riskScore,
-    reasoning: ticket.reasoning,
-    status: ticket.status,
-    resolvedById: ticket.resolvedById,
-    resolvedByName: ticket.resolvedBy?.name ?? null,
-    resolvedAt: ticket.resolvedAt,
-    expiresAt: ticket.expiresAt,
-    slackMsgTs: ticket.slackMsgTs,
-    createdAt: ticket.createdAt,
-  };
-}
+    async resolveTicket(
+        ticketId: string,
+        userId: string,
+        decision: 'APPROVED' | 'DENIED',
+        comment?: string,
+    ): Promise<ApprovalTicketDetail | null> {
+        const ticket = await this.approvalRepo.findRawById(ticketId);
+        if (!ticket) return null;
 
-export async function resolveTicket(
-  prisma: PrismaClient,
-  ticketId: string,
-  userId: string,
-  decision: 'APPROVED' | 'DENIED',
-  comment?: string,
-) {
-  const ticket = await prisma.approvalTicket.findUnique({
-    where: { id: ticketId },
-  });
+        if (ticket.status !== 'PENDING') {
+            throw new Error('Ticket already resolved');
+        }
 
-  if (!ticket) return null;
+        if (ticket.expiresAt < new Date()) {
+            throw new Error('Ticket expired');
+        }
 
-  if (ticket.status !== 'PENDING') {
-    throw new Error('Ticket already resolved');
-  }
+        const reasoning = comment
+            ? `${ticket.reasoning}\n\nDecision comment: ${comment}`
+            : undefined;
 
-  if (ticket.expiresAt < new Date()) {
-    throw new Error('Ticket expired');
-  }
+        return this.approvalRepo.resolve(ticketId, {
+            status: decision,
+            resolvedById: userId,
+            resolvedAt: new Date(),
+            reasoning,
+        });
+    }
 
-  const updated = await prisma.approvalTicket.update({
-    where: { id: ticketId, status: 'PENDING' },
-    data: {
-      status: decision,
-      resolvedById: userId,
-      resolvedAt: new Date(),
-      ...(comment ? { reasoning: `${ticket.reasoning}\n\nDecision comment: ${comment}` } : {}),
-    },
-    include: {
-      agent: { select: { name: true } },
-      resolvedBy: { select: { name: true, email: true } },
-    },
-  });
+    async listTickets(query: ApprovalQuery): Promise<ApprovalListResult> {
+        return this.approvalRepo.findMany(query);
+    }
 
-  return updated;
-}
-
-export async function listTickets(prisma: PrismaClient, query: ApprovalQuery) {
-  const { status, agentId, page, limit } = query;
-
-  const where: Record<string, unknown> = {};
-  if (status) where['status'] = status;
-  if (agentId) where['agentId'] = agentId;
-
-  const [data, total, pendingCount] = await Promise.all([
-    prisma.approvalTicket.findMany({
-      where,
-      skip: (page - 1) * limit,
-      take: limit,
-      orderBy: { expiresAt: 'asc' },
-      include: {
-        agent: { select: { name: true } },
-        resolvedBy: { select: { name: true } },
-      },
-    }),
-    prisma.approvalTicket.count({ where }),
-    prisma.approvalTicket.count({ where: { status: 'PENDING' } }),
-  ]);
-
-  const mapped = data.map((t) => ({
-    id: t.id,
-    agentId: t.agentId,
-    agentName: t.agent.name,
-    actionType: t.actionType,
-    payload: t.payload,
-    riskScore: t.riskScore,
-    reasoning: t.reasoning,
-    status: t.status,
-    resolvedById: t.resolvedById,
-    resolvedByName: t.resolvedBy?.name ?? null,
-    resolvedAt: t.resolvedAt,
-    expiresAt: t.expiresAt,
-    slackMsgTs: t.slackMsgTs,
-    createdAt: t.createdAt,
-  }));
-
-  return { data: mapped, total, pendingCount, page, limit };
-}
-
-export async function expirePendingTickets(prisma: PrismaClient) {
-  const result = await prisma.approvalTicket.updateMany({
-    where: {
-      status: 'PENDING',
-      expiresAt: { lt: new Date() },
-    },
-    data: { status: 'EXPIRED' },
-  });
-
-  return result.count;
+    async expirePendingTickets(): Promise<number> {
+        return this.approvalRepo.expireStale(new Date());
+    }
 }
