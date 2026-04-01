@@ -58,7 +58,7 @@ beforeAll(async () => {
   adminToken = loginRes.body.accessToken;
 
   const agentRes = await agent
-    .post('/api/agents')
+    .post('/api/v1/agents')
     .set('Authorization', `Bearer ${adminToken}`)
     .send(TEST_AGENT);
   testAgentId = agentRes.body.id;
@@ -119,14 +119,14 @@ async function seedTicket(status: string) {
   return ticket;
 }
 
-// --- GET /api/analytics/costs ---
+// --- GET /api/v1/analytics/costs ---
 
-describe('GET /api/analytics/costs', () => {
+describe('GET /api/v1/analytics/costs', () => {
   it('returns cost summary with all required fields', async () => {
     await seedLog({ costUsd: 0.05 });
 
     const res = await agent
-      .get('/api/analytics/costs')
+      .get('/api/v1/analytics/costs')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -140,7 +140,7 @@ describe('GET /api/analytics/costs', () => {
 
   it('returns 400 for invalid date range', async () => {
     const res = await agent
-      .get('/api/analytics/costs?fromDate=2026-03-21&toDate=2026-03-01')
+      .get('/api/v1/analytics/costs?fromDate=2026-03-21&toDate=2026-03-01')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(400);
@@ -149,7 +149,7 @@ describe('GET /api/analytics/costs', () => {
 
   it('accepts valid date range filter', async () => {
     const res = await agent
-      .get('/api/analytics/costs?fromDate=2026-03-01&toDate=2026-03-31')
+      .get('/api/v1/analytics/costs?fromDate=2026-03-01&toDate=2026-03-31')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -157,17 +157,17 @@ describe('GET /api/analytics/costs', () => {
   });
 
   it('returns 401 without auth token', async () => {
-    const res = await agent.get('/api/analytics/costs');
+    const res = await agent.get('/api/v1/analytics/costs');
     expect(res.status).toBe(401);
   });
 });
 
-// --- GET /api/analytics/costs/timeline ---
+// --- GET /api/v1/analytics/costs/timeline ---
 
-describe('GET /api/analytics/costs/timeline', () => {
+describe('GET /api/v1/analytics/costs/timeline', () => {
   it('returns 30 dates by default', async () => {
     const res = await agent
-      .get('/api/analytics/costs/timeline')
+      .get('/api/v1/analytics/costs/timeline')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -178,7 +178,7 @@ describe('GET /api/analytics/costs/timeline', () => {
 
   it('returns 7 dates when days=7', async () => {
     const res = await agent
-      .get('/api/analytics/costs/timeline?days=7')
+      .get('/api/v1/analytics/costs/timeline?days=7')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -189,7 +189,7 @@ describe('GET /api/analytics/costs/timeline', () => {
     await seedLog({ costUsd: 0.05 });
 
     const res = await agent
-      .get('/api/analytics/costs/timeline?days=7')
+      .get('/api/v1/analytics/costs/timeline?days=7')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -206,7 +206,7 @@ describe('GET /api/analytics/costs/timeline', () => {
     await seedLog({ costUsd: 0.01 });
 
     const res = await agent
-      .get(`/api/analytics/costs/timeline?days=7&agentId=${testAgentId}`)
+      .get(`/api/v1/analytics/costs/timeline?days=7&agentId=${testAgentId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -217,7 +217,7 @@ describe('GET /api/analytics/costs/timeline', () => {
 
   it('returns empty series for non-existent agent', async () => {
     const res = await agent
-      .get('/api/analytics/costs/timeline?days=7&agentId=00000000-0000-0000-0000-000000000099')
+      .get('/api/v1/analytics/costs/timeline?days=7&agentId=00000000-0000-0000-0000-000000000099')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -226,9 +226,9 @@ describe('GET /api/analytics/costs/timeline', () => {
   });
 });
 
-// --- GET /api/analytics/usage ---
+// --- GET /api/v1/analytics/usage ---
 
-describe('GET /api/analytics/usage', () => {
+describe('GET /api/v1/analytics/usage', () => {
   it('returns all usage stat fields', async () => {
     const traceId = `usage-int-${Date.now()}`;
     await seedLog({ traceId, event: 'llm_call', costUsd: 0.01 });
@@ -237,7 +237,7 @@ describe('GET /api/analytics/usage', () => {
     await seedTicket('DENIED');
 
     const res = await agent
-      .get('/api/analytics/usage')
+      .get('/api/v1/analytics/usage')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -256,7 +256,7 @@ describe('GET /api/analytics/usage', () => {
 
   it('returns zeros for future date range', async () => {
     const res = await agent
-      .get('/api/analytics/usage?fromDate=2099-01-01&toDate=2099-01-02')
+      .get('/api/v1/analytics/usage?fromDate=2099-01-01&toDate=2099-01-02')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -266,14 +266,14 @@ describe('GET /api/analytics/usage', () => {
   });
 });
 
-// --- GET /api/analytics/agents ---
+// --- GET /api/v1/analytics/agents ---
 
-describe('GET /api/analytics/agents', () => {
+describe('GET /api/v1/analytics/agents', () => {
   it('returns agent leaderboard sorted by cost (default)', async () => {
     await seedLog({ costUsd: 0.10 });
 
     const res = await agent
-      .get('/api/analytics/agents')
+      .get('/api/v1/analytics/agents')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -300,7 +300,7 @@ describe('GET /api/analytics/agents', () => {
     await seedLog({ costUsd: 0.01, success: false });
 
     const res = await agent
-      .get('/api/analytics/agents?sortBy=errorRate')
+      .get('/api/v1/analytics/agents?sortBy=errorRate')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -311,7 +311,7 @@ describe('GET /api/analytics/agents', () => {
     await seedLog({ costUsd: 0.01 });
 
     const res = await agent
-      .get('/api/analytics/agents?limit=1')
+      .get('/api/v1/analytics/agents?limit=1')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -319,14 +319,14 @@ describe('GET /api/analytics/agents', () => {
   });
 });
 
-// --- GET /api/analytics/models ---
+// --- GET /api/v1/analytics/models ---
 
-describe('GET /api/analytics/models', () => {
+describe('GET /api/v1/analytics/models', () => {
   it('returns model usage sorted by cost desc', async () => {
     await seedLog({ model: 'claude-sonnet-4-5', costUsd: 0.10, inputTokens: 1000, outputTokens: 500 });
 
     const res = await agent
-      .get('/api/analytics/models')
+      .get('/api/v1/analytics/models')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -347,7 +347,7 @@ describe('GET /api/analytics/models', () => {
     await seedLog({ model: null, costUsd: 0.01 });
 
     const res = await agent
-      .get('/api/analytics/models')
+      .get('/api/v1/analytics/models')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -359,7 +359,7 @@ describe('GET /api/analytics/models', () => {
 
   it('returns empty models array when no model data exists', async () => {
     const res = await agent
-      .get('/api/analytics/models')
+      .get('/api/v1/analytics/models')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);

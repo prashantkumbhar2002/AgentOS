@@ -100,7 +100,7 @@ beforeAll(async () => {
   viewerToken = viewerLogin.body.accessToken;
 
   const agentRes = await agent
-    .post('/api/agents')
+    .post('/api/v1/agents')
     .set('Authorization', `Bearer ${adminToken}`)
     .send(TEST_AGENT);
   testAgentId = agentRes.body.id;
@@ -140,7 +140,7 @@ function validApprovalPayload(overrides = {}) {
 
 async function createTicket(overrides = {}): Promise<string> {
   const res = await agent
-    .post('/api/approvals')
+    .post('/api/v1/approvals')
     .set('Authorization', `Bearer ${adminToken}`)
     .send(validApprovalPayload(overrides));
   createdTicketIds.push(res.body.ticketId);
@@ -149,10 +149,10 @@ async function createTicket(overrides = {}): Promise<string> {
 
 // --- Create Ticket Tests ---
 
-describe('POST /api/approvals', () => {
+describe('POST /api/v1/approvals', () => {
   it('returns 201 with PENDING status and expiresAt on valid input', async () => {
     const res = await agent
-      .post('/api/approvals')
+      .post('/api/v1/approvals')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(validApprovalPayload());
 
@@ -170,7 +170,7 @@ describe('POST /api/approvals', () => {
 
   it('returns 400 on validation error (missing required fields)', async () => {
     const res = await agent
-      .post('/api/approvals')
+      .post('/api/v1/approvals')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
@@ -181,7 +181,7 @@ describe('POST /api/approvals', () => {
 
   it('returns 400 for non-existent agentId', async () => {
     const res = await agent
-      .post('/api/approvals')
+      .post('/api/v1/approvals')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(validApprovalPayload({ agentId: '00000000-0000-0000-0000-000000000000' }));
 
@@ -191,7 +191,7 @@ describe('POST /api/approvals', () => {
 
   it('returns 400 when riskScore is out of range', async () => {
     const res = await agent
-      .post('/api/approvals')
+      .post('/api/v1/approvals')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(validApprovalPayload({ riskScore: 1.5 }));
 
@@ -200,19 +200,19 @@ describe('POST /api/approvals', () => {
   });
 
   it('returns 401 without auth token', async () => {
-    const res = await agent.post('/api/approvals').send(validApprovalPayload());
+    const res = await agent.post('/api/v1/approvals').send(validApprovalPayload());
     expect(res.status).toBe(401);
   });
 });
 
 // --- Poll Ticket Tests ---
 
-describe('GET /api/approvals/:id', () => {
+describe('GET /api/v1/approvals/:id', () => {
   it('returns full ticket with PENDING status', async () => {
     const ticketId = await createTicket();
 
     const res = await agent
-      .get(`/api/approvals/${ticketId}`)
+      .get(`/api/v1/approvals/${ticketId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -229,7 +229,7 @@ describe('GET /api/approvals/:id', () => {
 
   it('returns 404 for non-existent ticket', async () => {
     const res = await agent
-      .get('/api/approvals/00000000-0000-0000-0000-000000000000')
+      .get('/api/v1/approvals/00000000-0000-0000-0000-000000000000')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
@@ -248,7 +248,7 @@ describe('GET /api/approvals/:id', () => {
     });
 
     const res = await agent
-      .get(`/api/approvals/${ticketId}`)
+      .get(`/api/v1/approvals/${ticketId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -258,12 +258,12 @@ describe('GET /api/approvals/:id', () => {
 
 // --- Resolve Ticket Tests ---
 
-describe('PATCH /api/approvals/:id/decide', () => {
+describe('PATCH /api/v1/approvals/:id/decide', () => {
   it('admin can approve a PENDING ticket', async () => {
     const ticketId = await createTicket();
 
     const res = await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'APPROVED', comment: 'Looks good' });
 
@@ -279,7 +279,7 @@ describe('PATCH /api/approvals/:id/decide', () => {
     const ticketId = await createTicket();
 
     const res = await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${approverToken}`)
       .send({ decision: 'DENIED', comment: 'Too risky' });
 
@@ -292,7 +292,7 @@ describe('PATCH /api/approvals/:id/decide', () => {
     const ticketId = await createTicket();
 
     const res = await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${viewerToken}`)
       .send({ decision: 'APPROVED' });
 
@@ -309,7 +309,7 @@ describe('PATCH /api/approvals/:id/decide', () => {
     });
 
     const res = await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'APPROVED' });
 
@@ -321,12 +321,12 @@ describe('PATCH /api/approvals/:id/decide', () => {
     const ticketId = await createTicket();
 
     await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'APPROVED' });
 
     const res = await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${approverToken}`)
       .send({ decision: 'DENIED' });
 
@@ -336,7 +336,7 @@ describe('PATCH /api/approvals/:id/decide', () => {
 
   it('returns 404 for non-existent ticket', async () => {
     const res = await agent
-      .patch('/api/approvals/00000000-0000-0000-0000-000000000000/decide')
+      .patch('/api/v1/approvals/00000000-0000-0000-0000-000000000000/decide')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'APPROVED' });
 
@@ -348,7 +348,7 @@ describe('PATCH /api/approvals/:id/decide', () => {
     const ticketId = await createTicket();
 
     const res = await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'MAYBE' });
 
@@ -359,13 +359,13 @@ describe('PATCH /api/approvals/:id/decide', () => {
 
 // --- List Tickets Tests ---
 
-describe('GET /api/approvals', () => {
+describe('GET /api/v1/approvals', () => {
   it('returns default list sorted by expiresAt ASC with pendingCount', async () => {
     await createTicket({ riskScore: 0.75 });
     await createTicket({ riskScore: 0.8 });
 
     const res = await agent
-      .get('/api/approvals')
+      .get('/api/v1/approvals')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -382,7 +382,7 @@ describe('GET /api/approvals', () => {
     await createTicket();
 
     const res = await agent
-      .get(`/api/approvals?agentId=${testAgentId}`)
+      .get(`/api/v1/approvals?agentId=${testAgentId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -395,12 +395,12 @@ describe('GET /api/approvals', () => {
     const ticketId = await createTicket();
 
     await agent
-      .patch(`/api/approvals/${ticketId}/decide`)
+      .patch(`/api/v1/approvals/${ticketId}/decide`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'APPROVED' });
 
     const res = await agent
-      .get('/api/approvals?status=APPROVED')
+      .get('/api/v1/approvals?status=APPROVED')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -411,7 +411,7 @@ describe('GET /api/approvals', () => {
 
   it('returns empty results when no tickets match', async () => {
     const res = await agent
-      .get('/api/approvals?agentId=00000000-0000-0000-0000-000000000099')
+      .get('/api/v1/approvals?agentId=00000000-0000-0000-0000-000000000099')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);

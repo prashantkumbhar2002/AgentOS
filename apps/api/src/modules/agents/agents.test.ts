@@ -110,7 +110,7 @@ afterAll(async () => {
 
 async function createTestAgent(overrides = {}): Promise<string> {
   const res = await agent
-    .post('/api/agents')
+    .post('/api/v1/agents')
     .set('Authorization', `Bearer ${adminToken}`)
     .send({ ...VALID_AGENT, ...overrides });
   createdAgentIds.push(res.body.id);
@@ -119,10 +119,10 @@ async function createTestAgent(overrides = {}): Promise<string> {
 
 // --- T2.08: Create Agent Tests ---
 
-describe('POST /api/agents', () => {
+describe('POST /api/v1/agents', () => {
   it('returns 201 with agent in DRAFT status on valid input', async () => {
     const res = await agent
-      .post('/api/agents')
+      .post('/api/v1/agents')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(VALID_AGENT);
 
@@ -137,7 +137,7 @@ describe('POST /api/agents', () => {
 
   it('returns 400 on validation error (missing required fields)', async () => {
     const res = await agent
-      .post('/api/agents')
+      .post('/api/v1/agents')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name: 'Incomplete Agent' });
 
@@ -149,7 +149,7 @@ describe('POST /api/agents', () => {
   it('allows duplicate agent names in same team', async () => {
     const id1 = await createTestAgent({ name: 'Duplicate Name' });
     const res = await agent
-      .post('/api/agents')
+      .post('/api/v1/agents')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_AGENT, name: 'Duplicate Name' });
 
@@ -159,20 +159,20 @@ describe('POST /api/agents', () => {
   });
 
   it('returns 401 without auth token', async () => {
-    const res = await agent.post('/api/agents').send(VALID_AGENT);
+    const res = await agent.post('/api/v1/agents').send(VALID_AGENT);
     expect(res.status).toBe(401);
   });
 });
 
 // --- T2.09: List Agents Tests ---
 
-describe('GET /api/agents', () => {
+describe('GET /api/v1/agents', () => {
   it('returns paginated list with no filters', async () => {
     await createTestAgent({ name: 'List Agent 1' });
     await createTestAgent({ name: 'List Agent 2' });
 
     const res = await agent
-      .get('/api/agents')
+      .get('/api/v1/agents')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -188,7 +188,7 @@ describe('GET /api/agents', () => {
     await createTestAgent({ name: 'Low Risk', riskTier: 'LOW' });
 
     const res = await agent
-      .get('/api/agents?riskTier=HIGH')
+      .get('/api/v1/agents?riskTier=HIGH')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -202,7 +202,7 @@ describe('GET /api/agents', () => {
     await createTestAgent({ name: 'Research Agent' });
 
     const res = await agent
-      .get('/api/agents?search=email')
+      .get('/api/v1/agents?search=email')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -212,7 +212,7 @@ describe('GET /api/agents', () => {
 
   it('returns empty results when no agents match filters', async () => {
     const res = await agent
-      .get('/api/agents?ownerTeam=nonexistent-team-xyz')
+      .get('/api/v1/agents?ownerTeam=nonexistent-team-xyz')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -226,7 +226,7 @@ describe('GET /api/agents', () => {
     await createTestAgent({ name: 'Page Agent 3' });
 
     const res = await agent
-      .get('/api/agents?page=1&limit=2')
+      .get('/api/v1/agents?page=1&limit=2')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -238,12 +238,12 @@ describe('GET /api/agents', () => {
 
 // --- T2.10: Get Agent Detail Tests ---
 
-describe('GET /api/agents/:id', () => {
+describe('GET /api/v1/agents/:id', () => {
   it('returns full agent detail with stats', async () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .get(`/api/agents/${id}`)
+      .get(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -259,7 +259,7 @@ describe('GET /api/agents/:id', () => {
 
   it('returns 404 for non-existent agent', async () => {
     const res = await agent
-      .get('/api/agents/00000000-0000-0000-0000-000000000000')
+      .get('/api/v1/agents/00000000-0000-0000-0000-000000000000')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
@@ -269,12 +269,12 @@ describe('GET /api/agents/:id', () => {
 
 // --- T2.12: Status Transitions Tests ---
 
-describe('PATCH /api/agents/:id/status', () => {
+describe('PATCH /api/v1/agents/:id/status', () => {
   it('transitions DRAFT → APPROVED by approver', async () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${approverToken}`)
       .send({ status: 'APPROVED' });
 
@@ -285,10 +285,10 @@ describe('PATCH /api/agents/:id/status', () => {
 
   it('transitions APPROVED → ACTIVE by admin', async () => {
     const id = await createTestAgent();
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'ACTIVE' });
 
@@ -298,11 +298,11 @@ describe('PATCH /api/agents/:id/status', () => {
 
   it('transitions ACTIVE → SUSPENDED by admin', async () => {
     const id = await createTestAgent();
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'SUSPENDED' });
 
@@ -312,12 +312,12 @@ describe('PATCH /api/agents/:id/status', () => {
 
   it('transitions SUSPENDED → ACTIVE by admin', async () => {
     const id = await createTestAgent();
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'SUSPENDED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'SUSPENDED' });
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'ACTIVE' });
 
@@ -329,7 +329,7 @@ describe('PATCH /api/agents/:id/status', () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'DEPRECATED' });
 
@@ -341,7 +341,7 @@ describe('PATCH /api/agents/:id/status', () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'ACTIVE' });
 
@@ -354,7 +354,7 @@ describe('PATCH /api/agents/:id/status', () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .patch(`/api/agents/${id}/status`)
+      .patch(`/api/v1/agents/${id}/status`)
       .set('Authorization', `Bearer ${viewerToken}`)
       .send({ status: 'APPROVED' });
 
@@ -363,7 +363,7 @@ describe('PATCH /api/agents/:id/status', () => {
 
   it('returns 404 for non-existent agent', async () => {
     const res = await agent
-      .patch('/api/agents/00000000-0000-0000-0000-000000000000/status')
+      .patch('/api/v1/agents/00000000-0000-0000-0000-000000000000/status')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
 
@@ -373,12 +373,12 @@ describe('PATCH /api/agents/:id/status', () => {
 
 // --- T2.11: Update Metadata Tests ---
 
-describe('PATCH /api/agents/:id', () => {
+describe('PATCH /api/v1/agents/:id', () => {
   it('admin can partial-update agent metadata', async () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .patch(`/api/agents/${id}`)
+      .patch(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ description: 'Updated description' });
 
@@ -391,7 +391,7 @@ describe('PATCH /api/agents/:id', () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .patch(`/api/agents/${id}`)
+      .patch(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${viewerToken}`)
       .send({ description: 'Should fail' });
 
@@ -400,7 +400,7 @@ describe('PATCH /api/agents/:id', () => {
 
   it('returns 404 for non-existent agent', async () => {
     const res = await agent
-      .patch('/api/agents/00000000-0000-0000-0000-000000000000')
+      .patch('/api/v1/agents/00000000-0000-0000-0000-000000000000')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ description: 'Not found' });
 
@@ -410,15 +410,15 @@ describe('PATCH /api/agents/:id', () => {
 
 // --- T2.13: Soft Delete Tests ---
 
-describe('DELETE /api/agents/:id', () => {
+describe('DELETE /api/v1/agents/:id', () => {
   it('deprecates a SUSPENDED agent', async () => {
     const id = await createTestAgent();
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'SUSPENDED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'SUSPENDED' });
 
     const res = await agent
-      .delete(`/api/agents/${id}`)
+      .delete(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -427,11 +427,11 @@ describe('DELETE /api/agents/:id', () => {
 
   it('rejects deprecating an ACTIVE agent with 400', async () => {
     const id = await createTestAgent();
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
-    await agent.patch(`/api/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
+    await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
 
     const res = await agent
-      .delete(`/api/agents/${id}`)
+      .delete(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(400);
@@ -442,7 +442,7 @@ describe('DELETE /api/agents/:id', () => {
     const id = await createTestAgent();
 
     const res = await agent
-      .delete(`/api/agents/${id}`)
+      .delete(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${viewerToken}`);
 
     expect(res.status).toBe(403);

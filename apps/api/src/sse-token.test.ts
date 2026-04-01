@@ -34,7 +34,7 @@ async function buildSseTestApp() {
     });
 
     app.post(
-        '/api/events/token',
+        '/api/v1/events/token',
         { preHandler: [testAuthenticate] },
         async (request, reply) => {
             const user = request.user as { id: string; role: string };
@@ -47,7 +47,7 @@ async function buildSseTestApp() {
         },
     );
 
-    app.get('/api/events/stream', async (request, reply) => {
+    app.get('/api/v1/events/stream', async (request, reply) => {
         const token = (request.query as Record<string, string>)['token'];
         if (!token) {
             return reply.status(401).send({ error: 'TOKEN_MISSING' });
@@ -79,7 +79,7 @@ describe('SSE Token Endpoint', () => {
 
         const res = await app.inject({
             method: 'POST',
-            url: '/api/events/token',
+            url: '/api/v1/events/token',
             headers: { authorization: `Bearer ${mainToken}` },
         });
 
@@ -98,7 +98,7 @@ describe('SSE Token Endpoint', () => {
 
         const res = await app.inject({
             method: 'POST',
-            url: '/api/events/token',
+            url: '/api/v1/events/token',
         });
 
         expect(res.statusCode).toBe(401);
@@ -116,7 +116,7 @@ describe('SSE Stream Auth', () => {
 
         const res = await app.inject({
             method: 'GET',
-            url: `/api/events/stream?token=${sseToken}`,
+            url: `/api/v1/events/stream?token=${sseToken}`,
         });
 
         expect(res.statusCode).toBe(200);
@@ -129,7 +129,7 @@ describe('SSE Stream Auth', () => {
 
         const res = await app.inject({
             method: 'GET',
-            url: `/api/events/stream?token=${mainToken}`,
+            url: `/api/v1/events/stream?token=${mainToken}`,
         });
 
         expect(res.statusCode).toBe(401);
@@ -145,7 +145,7 @@ describe('SSE Stream Auth', () => {
 
         const res = await app.inject({
             method: 'GET',
-            url: `/api/events/stream?token=${expiredToken}`,
+            url: `/api/v1/events/stream?token=${expiredToken}`,
         });
 
         expect(res.statusCode).toBe(401);
@@ -161,7 +161,7 @@ describe('SSE Stream Auth', () => {
 
         const res = await app.inject({
             method: 'GET',
-            url: `/api/events/stream?token=${badToken}`,
+            url: `/api/v1/events/stream?token=${badToken}`,
         });
 
         expect(res.statusCode).toBe(401);
@@ -172,7 +172,7 @@ describe('SSE Stream Auth', () => {
 
         const res = await app.inject({
             method: 'GET',
-            url: '/api/events/stream',
+            url: '/api/v1/events/stream',
         });
 
         expect(res.statusCode).toBe(401);

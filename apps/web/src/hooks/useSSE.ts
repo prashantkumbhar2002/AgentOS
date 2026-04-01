@@ -26,7 +26,7 @@ export function useSSE() {
         if (!token) return
 
         try {
-            const res = await fetch(`${API_URL}/api/events/token`, {
+            const res = await fetch(`${API_URL}/api/v1/events/token`, {
                 method: 'POST',
                 headers: {
                     Authorization: `Bearer ${token}`,
@@ -43,7 +43,7 @@ export function useSSE() {
 
             const { sseToken } = (await res.json()) as { sseToken: string }
 
-            const url = `${API_URL}/api/events/stream?token=${sseToken}`
+            const url = `${API_URL}/api/v1/events/stream?token=${sseToken}`
             const es = new EventSource(url)
             eventSourceRef.current = es
 

@@ -79,15 +79,15 @@ export async function buildApp() {
     await fastify.register(slackPlugin);
 
     await fastify.register(usersRoutes, { prefix: '/api/auth' });
-    await fastify.register(agentsRoutes, { prefix: '/api/agents' });
-    await fastify.register(auditRoutes, { prefix: '/api/audit' });
-    await fastify.register(approvalRoutes, { prefix: '/api/approvals' });
-    await fastify.register(policyRoutes, { prefix: '/api/policies' });
-    await fastify.register(analyticsRoutes, { prefix: '/api/analytics' });
-    await fastify.register(showcaseRoutes, { prefix: '/api/showcase' });
+    await fastify.register(agentsRoutes, { prefix: '/api/v1/agents' });
+    await fastify.register(auditRoutes, { prefix: '/api/v1/audit' });
+    await fastify.register(approvalRoutes, { prefix: '/api/v1/approvals' });
+    await fastify.register(policyRoutes, { prefix: '/api/v1/policies' });
+    await fastify.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
+    await fastify.register(showcaseRoutes, { prefix: '/api/v1/showcase' });
 
     fastify.post(
-        '/api/events/token',
+        '/api/v1/events/token',
         { preHandler: [authenticate] },
         async (request, reply) => {
             const { id, role } = request.user;
@@ -100,7 +100,7 @@ export async function buildApp() {
         },
     );
 
-    fastify.get('/api/events/stream', async (request, reply) => {
+    fastify.get('/api/v1/events/stream', async (request, reply) => {
         const token = (request.query as Record<string, string>)['token'];
         if (!token) {
             throw new AuthenticationError('TOKEN_MISSING');
@@ -134,6 +134,19 @@ export async function buildApp() {
             fastify.sse.removeClient(clientId);
         });
     });
+
+    // 301 redirects: old unversioned paths → /api/v1/...
+    const VERSIONED_PREFIXES = ['agents', 'audit', 'approvals', 'policies', 'analytics', 'showcase', 'events'];
+    for (const prefix of VERSIONED_PREFIXES) {
+        fastify.all(`/api/${prefix}`, async (request, reply) => {
+            const search = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : '';
+            return reply.status(301).redirect(`/api/v1/${prefix}${search}`);
+        });
+        fastify.all(`/api/${prefix}/*`, async (request, reply) => {
+            const newUrl = request.url.replace(`/api/${prefix}`, `/api/v1/${prefix}`);
+            return reply.status(301).redirect(newUrl);
+        });
+    }
 
     fastify.get('/api/health', async (_request, reply) => {
         return reply.status(200).send({ status: 'ok' });

@@ -100,11 +100,11 @@ const VALID_EVENT = {
   success: true,
 };
 
-describe('POST /api/audit/log', () => {
+describe('POST /api/v1/audit/log', () => {
   it('returns 201 with server-calculated costUsd', async () => {
     const traceId = randomUUID();
     const res = await agent
-      .post('/api/audit/log')
+      .post('/api/v1/audit/log')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId });
 
@@ -118,7 +118,7 @@ describe('POST /api/audit/log', () => {
 
   it('returns 400 for validation errors', async () => {
     const res = await agent
-      .post('/api/audit/log')
+      .post('/api/v1/audit/log')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ event: 'invalid_event' });
 
@@ -128,7 +128,7 @@ describe('POST /api/audit/log', () => {
 
   it('returns 400 for non-existent agentId', async () => {
     const res = await agent
-      .post('/api/audit/log')
+      .post('/api/v1/audit/log')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         ...VALID_EVENT,
@@ -142,23 +142,23 @@ describe('POST /api/audit/log', () => {
 
   it('returns 401 without auth', async () => {
     const res = await agent
-      .post('/api/audit/log')
+      .post('/api/v1/audit/log')
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: randomUUID() });
 
     expect(res.status).toBe(401);
   });
 });
 
-describe('GET /api/audit/logs', () => {
+describe('GET /api/v1/audit/logs', () => {
   it('returns paginated logs with totalCostUsd', async () => {
     const traceId = randomUUID();
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId });
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: randomUUID() });
 
     const res = await agent
-      .get('/api/audit/logs')
+      .get('/api/v1/audit/logs')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -170,11 +170,11 @@ describe('GET /api/audit/logs', () => {
   });
 
   it('filters by agentId', async () => {
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: randomUUID() });
 
     const res = await agent
-      .get(`/api/audit/logs?agentId=${testAgentId}`)
+      .get(`/api/v1/audit/logs?agentId=${testAgentId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -184,13 +184,13 @@ describe('GET /api/audit/logs', () => {
   });
 
   it('filters by event type', async () => {
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: randomUUID() });
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, event: 'tool_call', toolName: 'search', agentId: testAgentId, traceId: randomUUID() });
 
     const res = await agent
-      .get('/api/audit/logs?event=tool_call')
+      .get('/api/v1/audit/logs?event=tool_call')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -200,11 +200,11 @@ describe('GET /api/audit/logs', () => {
   });
 
   it('filters by success=false', async () => {
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: randomUUID(), success: false, errorMsg: 'test error' });
 
     const res = await agent
-      .get('/api/audit/logs?success=false')
+      .get('/api/v1/audit/logs?success=false')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -215,7 +215,7 @@ describe('GET /api/audit/logs', () => {
 
   it('returns empty results for non-matching filters', async () => {
     const res = await agent
-      .get(`/api/audit/logs?agentId=00000000-0000-0000-0000-000000000099`)
+      .get(`/api/v1/audit/logs?agentId=00000000-0000-0000-0000-000000000099`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -225,16 +225,16 @@ describe('GET /api/audit/logs', () => {
   });
 });
 
-describe('GET /api/audit/traces/:traceId', () => {
+describe('GET /api/v1/audit/traces/:traceId', () => {
   it('returns trace with ordered events and aggregates', async () => {
     const traceId = randomUUID();
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId });
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, event: 'tool_call', toolName: 'search', agentId: testAgentId, traceId, latencyMs: 300 });
 
     const res = await agent
-      .get(`/api/audit/traces/${traceId}`)
+      .get(`/api/v1/audit/traces/${traceId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -249,7 +249,7 @@ describe('GET /api/audit/traces/:traceId', () => {
 
   it('returns 404 for non-existent trace', async () => {
     const res = await agent
-      .get(`/api/audit/traces/${randomUUID()}`)
+      .get(`/api/v1/audit/traces/${randomUUID()}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
@@ -257,13 +257,13 @@ describe('GET /api/audit/traces/:traceId', () => {
   });
 });
 
-describe('GET /api/audit/logs?export=csv', () => {
+describe('GET /api/v1/audit/logs?export=csv', () => {
   it('returns CSV for admin', async () => {
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: randomUUID() });
 
     const res = await agent
-      .get('/api/audit/logs?export=csv')
+      .get('/api/v1/audit/logs?export=csv')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -276,26 +276,26 @@ describe('GET /api/audit/logs?export=csv', () => {
 
   it('returns 403 for viewer', async () => {
     const res = await agent
-      .get('/api/audit/logs?export=csv')
+      .get('/api/v1/audit/logs?export=csv')
       .set('Authorization', `Bearer ${viewerToken}`);
 
     expect(res.status).toBe(403);
   });
 });
 
-describe('GET /api/audit/stats/:agentId', () => {
+describe('GET /api/v1/audit/stats/:agentId', () => {
   it('returns correct aggregations', async () => {
     const traceId1 = randomUUID();
     const traceId2 = randomUUID();
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: traceId1 });
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, event: 'tool_call', toolName: 'search', agentId: testAgentId, traceId: traceId1, latencyMs: 200 });
-    await agent.post('/api/audit/log').set('Authorization', `Bearer ${adminToken}`)
+    await agent.post('/api/v1/audit/log').set('Authorization', `Bearer ${adminToken}`)
       .send({ ...VALID_EVENT, agentId: testAgentId, traceId: traceId2, success: false, errorMsg: 'fail' });
 
     const res = await agent
-      .get(`/api/audit/stats/${testAgentId}`)
+      .get(`/api/v1/audit/stats/${testAgentId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -321,7 +321,7 @@ describe('GET /api/audit/stats/:agentId', () => {
     });
 
     const res = await agent
-      .get(`/api/audit/stats/${cleanAgent.id}`)
+      .get(`/api/v1/audit/stats/${cleanAgent.id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -335,7 +335,7 @@ describe('GET /api/audit/stats/:agentId', () => {
 
   it('returns 404 for non-existent agent', async () => {
     const res = await agent
-      .get('/api/audit/stats/00000000-0000-0000-0000-000000000000')
+      .get('/api/v1/audit/stats/00000000-0000-0000-0000-000000000000')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);

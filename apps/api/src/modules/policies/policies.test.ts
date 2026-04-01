@@ -79,7 +79,7 @@ beforeAll(async () => {
   viewerToken = viewerLogin.body.accessToken;
 
   const agentRes = await agent
-    .post('/api/agents')
+    .post('/api/v1/agents')
     .set('Authorization', `Bearer ${adminToken}`)
     .send(TEST_AGENT);
   testAgentId = agentRes.body.id;
@@ -112,7 +112,7 @@ function uniqueName(base: string) {
 
 async function createTestPolicy(overrides: Record<string, unknown> = {}): Promise<string> {
   const res = await agent
-    .post('/api/policies')
+    .post('/api/v1/policies')
     .set('Authorization', `Bearer ${adminToken}`)
     .send({
       name: uniqueName('test-policy'),
@@ -128,11 +128,11 @@ async function createTestPolicy(overrides: Record<string, unknown> = {}): Promis
 
 // --- Create Policy Tests ---
 
-describe('POST /api/policies', () => {
+describe('POST /api/v1/policies', () => {
   it('returns 201 with policy and rules on valid input', async () => {
     const name = uniqueName('create-test');
     const res = await agent
-      .post('/api/policies')
+      .post('/api/v1/policies')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name,
@@ -157,7 +157,7 @@ describe('POST /api/policies', () => {
     await createTestPolicy({ name });
 
     const res = await agent
-      .post('/api/policies')
+      .post('/api/v1/policies')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name, description: 'Duplicate', rules: [] });
 
@@ -167,7 +167,7 @@ describe('POST /api/policies', () => {
 
   it('returns 403 for non-admin user', async () => {
     const res = await agent
-      .post('/api/policies')
+      .post('/api/v1/policies')
       .set('Authorization', `Bearer ${viewerToken}`)
       .send({ name: uniqueName('viewer'), description: 'test', rules: [] });
 
@@ -176,7 +176,7 @@ describe('POST /api/policies', () => {
 
   it('accepts empty rules array', async () => {
     const res = await agent
-      .post('/api/policies')
+      .post('/api/v1/policies')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name: uniqueName('empty-rules'), description: 'No rules', rules: [] });
 
@@ -188,13 +188,13 @@ describe('POST /api/policies', () => {
 
 // --- List Policies Tests ---
 
-describe('GET /api/policies', () => {
+describe('GET /api/v1/policies', () => {
   it('returns paginated list with total', async () => {
     await createTestPolicy();
     await createTestPolicy();
 
     const res = await agent
-      .get('/api/policies')
+      .get('/api/v1/policies')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -208,12 +208,12 @@ describe('GET /api/policies', () => {
   it('filters by isActive', async () => {
     const id = await createTestPolicy();
     await agent
-      .patch(`/api/policies/${id}`)
+      .patch(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ isActive: false });
 
     const res = await agent
-      .get('/api/policies?isActive=false')
+      .get('/api/v1/policies?isActive=false')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -225,12 +225,12 @@ describe('GET /api/policies', () => {
 
 // --- Get Policy Tests ---
 
-describe('GET /api/policies/:id', () => {
+describe('GET /api/v1/policies/:id', () => {
   it('returns full policy with rules and agents', async () => {
     const id = await createTestPolicy();
 
     const res = await agent
-      .get(`/api/policies/${id}`)
+      .get(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -241,7 +241,7 @@ describe('GET /api/policies/:id', () => {
 
   it('returns 404 for non-existent policy', async () => {
     const res = await agent
-      .get('/api/policies/00000000-0000-0000-0000-000000000000')
+      .get('/api/v1/policies/00000000-0000-0000-0000-000000000000')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
@@ -251,12 +251,12 @@ describe('GET /api/policies/:id', () => {
 
 // --- Update Policy Tests ---
 
-describe('PATCH /api/policies/:id', () => {
+describe('PATCH /api/v1/policies/:id', () => {
   it('admin can deactivate a policy', async () => {
     const id = await createTestPolicy();
 
     const res = await agent
-      .patch(`/api/policies/${id}`)
+      .patch(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ isActive: false });
 
@@ -268,7 +268,7 @@ describe('PATCH /api/policies/:id', () => {
     const id = await createTestPolicy();
 
     const res = await agent
-      .patch(`/api/policies/${id}`)
+      .patch(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${viewerToken}`)
       .send({ isActive: false });
 
@@ -278,12 +278,12 @@ describe('PATCH /api/policies/:id', () => {
 
 // --- Delete Policy Tests ---
 
-describe('DELETE /api/policies/:id', () => {
+describe('DELETE /api/v1/policies/:id', () => {
   it('admin can delete unassigned policy', async () => {
     const id = await createTestPolicy();
 
     const res = await agent
-      .delete(`/api/policies/${id}`)
+      .delete(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -294,12 +294,12 @@ describe('DELETE /api/policies/:id', () => {
     const id = await createTestPolicy();
 
     await agent
-      .post(`/api/policies/${id}/assign`)
+      .post(`/api/v1/policies/${id}/assign`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
     const res = await agent
-      .delete(`/api/policies/${id}`)
+      .delete(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(400);
@@ -310,12 +310,12 @@ describe('DELETE /api/policies/:id', () => {
 
 // --- Assign / Unassign Tests ---
 
-describe('POST /api/policies/:id/assign', () => {
+describe('POST /api/v1/policies/:id/assign', () => {
   it('assigns policy to agent', async () => {
     const id = await createTestPolicy();
 
     const res = await agent
-      .post(`/api/policies/${id}/assign`)
+      .post(`/api/v1/policies/${id}/assign`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
@@ -327,12 +327,12 @@ describe('POST /api/policies/:id/assign', () => {
     const id = await createTestPolicy();
 
     await agent
-      .post(`/api/policies/${id}/assign`)
+      .post(`/api/v1/policies/${id}/assign`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
     const res = await agent
-      .post(`/api/policies/${id}/assign`)
+      .post(`/api/v1/policies/${id}/assign`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
@@ -341,17 +341,17 @@ describe('POST /api/policies/:id/assign', () => {
   });
 });
 
-describe('DELETE /api/policies/:id/assign/:agentId', () => {
+describe('DELETE /api/v1/policies/:id/assign/:agentId', () => {
   it('unassigns policy from agent', async () => {
     const id = await createTestPolicy();
 
     await agent
-      .post(`/api/policies/${id}/assign`)
+      .post(`/api/v1/policies/${id}/assign`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
     const res = await agent
-      .delete(`/api/policies/${id}/assign/${testAgentId}`)
+      .delete(`/api/v1/policies/${id}/assign/${testAgentId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -362,7 +362,7 @@ describe('DELETE /api/policies/:id/assign/:agentId', () => {
     const id = await createTestPolicy();
 
     const res = await agent
-      .delete(`/api/policies/${id}/assign/${testAgentId}`)
+      .delete(`/api/v1/policies/${id}/assign/${testAgentId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
@@ -372,7 +372,7 @@ describe('DELETE /api/policies/:id/assign/:agentId', () => {
 
 // --- Evaluate Tests ---
 
-describe('POST /api/policies/evaluate', () => {
+describe('POST /api/v1/policies/evaluate', () => {
   it('returns DENY when a DENY rule matches', async () => {
     await createTestPolicy({
       name: uniqueName('eval-deny'),
@@ -380,7 +380,7 @@ describe('POST /api/policies/evaluate', () => {
     });
 
     const res = await agent
-      .post('/api/policies/evaluate')
+      .post('/api/v1/policies/evaluate')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId, actionType: 'delete_record', riskTier: 'HIGH' });
 
@@ -396,7 +396,7 @@ describe('POST /api/policies/evaluate', () => {
     });
 
     const res = await agent
-      .post('/api/policies/evaluate')
+      .post('/api/v1/policies/evaluate')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId, actionType: 'read_data', riskTier: 'LOW' });
 
@@ -406,7 +406,7 @@ describe('POST /api/policies/evaluate', () => {
 
   it('returns default REQUIRE_APPROVAL when no rules match', async () => {
     const res = await agent
-      .post('/api/policies/evaluate')
+      .post('/api/v1/policies/evaluate')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId, actionType: 'nonexistent_action_xyz_42', riskTier: 'MEDIUM' });
 
@@ -417,7 +417,7 @@ describe('POST /api/policies/evaluate', () => {
 
   it('returns 404 for non-existent agent', async () => {
     const res = await agent
-      .post('/api/policies/evaluate')
+      .post('/api/v1/policies/evaluate')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         agentId: '00000000-0000-0000-0000-000000000000',
