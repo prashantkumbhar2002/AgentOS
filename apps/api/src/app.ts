@@ -1,6 +1,9 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 import prismaPlugin from './plugins/prisma.js';
 import authPlugin from './plugins/auth.js';
 import ssePlugin from './plugins/sse.js';
@@ -17,6 +20,7 @@ import showcaseRoutes from './modules/showcase/showcase.routes.js';
 import { createContainer } from './container.js';
 import { env } from './config/env.js';
 import { AuthenticationError } from './errors/index.js';
+import { authenticate } from './plugins/auth.js';
 
 export async function buildApp() {
     const fastify = Fastify({
@@ -27,6 +31,27 @@ export async function buildApp() {
                     ? { target: 'pino-pretty' }
                     : undefined,
         },
+        genReqId: (req) => {
+            const clientId = req.headers['x-request-id'];
+            if (typeof clientId === 'string' && clientId.length > 0) {
+                return clientId.slice(0, 64);
+            }
+            return randomUUID();
+        },
+        requestIdHeader: false,
+    });
+
+    await fastify.register(helmet, {
+        contentSecurityPolicy: {
+            directives: {
+                defaultSrc: ["'self'"],
+                scriptSrc: ["'self'"],
+                styleSrc: ["'self'", "'unsafe-inline'"],
+                imgSrc: ["'self'", "data:"],
+                connectSrc: ["'self'", env.FRONTEND_URL],
+            },
+        },
+        crossOriginEmbedderPolicy: false,
     });
 
     await fastify.register(cors, {
@@ -36,6 +61,10 @@ export async function buildApp() {
     await fastify.register(rateLimit, {
         max: 100,
         timeWindow: '1 minute',
+    });
+
+    fastify.addHook('onSend', async (request, reply) => {
+        reply.header('x-request-id', request.id);
     });
 
     await fastify.register(prismaPlugin);
@@ -57,6 +86,20 @@ export async function buildApp() {
     await fastify.register(analyticsRoutes, { prefix: '/api/analytics' });
     await fastify.register(showcaseRoutes, { prefix: '/api/showcase' });
 
+    fastify.post(
+        '/api/events/token',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            const { id, role } = request.user;
+            const sseToken = jwt.sign(
+                { userId: id, role, type: 'sse' },
+                env.SSE_SECRET,
+                { expiresIn: 30 },
+            );
+            return reply.status(200).send({ sseToken, expiresIn: 30 });
+        },
+    );
+
     fastify.get('/api/events/stream', async (request, reply) => {
         const token = (request.query as Record<string, string>)['token'];
         if (!token) {
@@ -64,7 +107,10 @@ export async function buildApp() {
         }
 
         try {
-            await fastify.jwt.verify(token);
+            const payload = jwt.verify(token, env.SSE_SECRET) as { type?: string };
+            if (payload.type !== 'sse') {
+                throw new Error('Not an SSE token');
+            }
         } catch {
             throw new AuthenticationError('TOKEN_INVALID');
         }
