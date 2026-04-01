@@ -43,26 +43,28 @@ export class PrismaAgentRepository implements IAgentRepository {
             this.prisma.agent.count({ where }),
         ]);
 
-        const data: AgentSummary[] = await Promise.all(
-            agents.map(async (agent) => {
-                const costAgg = await this.prisma.auditLog.aggregate({
-                    where: { agentId: agent.id, createdAt: { gte: sevenDaysAgo } },
-                    _sum: { costUsd: true },
-                });
+        // PERF: single batched query replaces N+1
+        const agentIds = agents.map((a) => a.id);
+        const costsByAgent = agentIds.length > 0
+            ? await this.prisma.auditLog.groupBy({
+                by: ['agentId'],
+                where: { agentId: { in: agentIds }, createdAt: { gte: sevenDaysAgo } },
+                _sum: { costUsd: true },
+            })
+            : [];
+        const costsMap = new Map(costsByAgent.map((c) => [c.agentId, c._sum.costUsd ?? 0]));
 
-                return {
-                    id: agent.id,
-                    name: agent.name,
-                    status: agent.status,
-                    riskTier: agent.riskTier,
-                    ownerTeam: agent.ownerTeam,
-                    environment: agent.environment,
-                    lastActiveAt: agent.lastActiveAt,
-                    toolCount: agent._count.tools,
-                    cost7dUsd: costAgg._sum.costUsd ?? 0,
-                };
-            }),
-        );
+        const data: AgentSummary[] = agents.map((agent) => ({
+            id: agent.id,
+            name: agent.name,
+            status: agent.status,
+            riskTier: agent.riskTier,
+            ownerTeam: agent.ownerTeam,
+            environment: agent.environment,
+            lastActiveAt: agent.lastActiveAt,
+            toolCount: agent._count.tools,
+            cost7dUsd: costsMap.get(agent.id) ?? 0,
+        }));
 
         return { data, total, page, limit };
     }

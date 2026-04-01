@@ -14,28 +14,29 @@ import type {
 export class PrismaAnalyticsRepository implements IAnalyticsRepository {
     constructor(private readonly prisma: PrismaClient) { }
 
+    // PERF: parallel execution replaces sequential loop
     async getCostAggregates(ranges: DateRange[]): Promise<CostAggregate[]> {
-        const results: CostAggregate[] = [];
+        const results = await Promise.all(
+            ranges.map(async (range) => {
+                const where: Record<string, unknown> = {};
+                if (range.gte || range.lt) {
+                    const createdAt: Record<string, Date> = {};
+                    if (range.gte) createdAt['gte'] = range.gte;
+                    if (range.lt) createdAt['lt'] = range.lt;
+                    where['createdAt'] = createdAt;
+                }
 
-        for (const range of ranges) {
-            const where: Record<string, unknown> = {};
-            if (range.gte || range.lt) {
-                const createdAt: Record<string, Date> = {};
-                if (range.gte) createdAt['gte'] = range.gte;
-                if (range.lt) createdAt['lt'] = range.lt;
-                where['createdAt'] = createdAt;
-            }
+                const agg = await this.prisma.auditLog.aggregate({
+                    _sum: { costUsd: true },
+                    where,
+                });
 
-            const agg = await this.prisma.auditLog.aggregate({
-                _sum: { costUsd: true },
-                where,
-            });
-
-            results.push({
-                rangeKey: range.key,
-                totalUsd: agg._sum.costUsd ?? 0,
-            });
-        }
+                return {
+                    rangeKey: range.key,
+                    totalUsd: agg._sum.costUsd ?? 0,
+                };
+            }),
+        );
 
         return results;
     }
