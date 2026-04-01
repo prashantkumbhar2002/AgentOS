@@ -6,6 +6,7 @@ import { runResearchAgent } from '../../showcase-agents/researchAgent.js';
 import { seedMockData } from '../../showcase-agents/mockAgent.js';
 import { env } from '../../config/env.js';
 import type { GovernanceClientConfig } from '@agentos/governance-sdk';
+import { NotFoundError, ValidationError, ExternalServiceError } from '../../errors/index.js';
 
 export default async function showcaseRoutes(fastify: FastifyInstance) {
     const { agentRepo, auditRepo, approvalRepo, userRepo } = fastify.services;
@@ -16,12 +17,12 @@ export default async function showcaseRoutes(fastify: FastifyInstance) {
         async (request, reply) => {
             const parsed = EmailAgentInputSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({ error: 'Validation failed', details: parsed.error.flatten() });
+                throw new ValidationError('Validation failed', { issues: parsed.error.flatten() });
             }
 
             const agent = await agentRepo.findByName('Email Draft Agent');
             if (!agent) {
-                return reply.status(404).send({ error: 'Email Draft Agent not registered. Run prisma db seed first.' });
+                throw new NotFoundError('Agent', 'Email Draft Agent');
             }
 
             const token = (request.headers.authorization ?? '').replace('Bearer ', '');
@@ -37,7 +38,7 @@ export default async function showcaseRoutes(fastify: FastifyInstance) {
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'ANTHROPIC_API_KEY not configured') {
-                    return reply.status(500).send({ error: message });
+                    throw new ExternalServiceError('Anthropic', message);
                 }
                 throw err;
             }
@@ -50,12 +51,12 @@ export default async function showcaseRoutes(fastify: FastifyInstance) {
         async (request, reply) => {
             const parsed = ResearchAgentInputSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({ error: 'Validation failed', details: parsed.error.flatten() });
+                throw new ValidationError('Validation failed', { issues: parsed.error.flatten() });
             }
 
             const agent = await agentRepo.findByName('Research Agent');
             if (!agent) {
-                return reply.status(404).send({ error: 'Research Agent not registered. Run prisma db seed first.' });
+                throw new NotFoundError('Agent', 'Research Agent');
             }
 
             const token = (request.headers.authorization ?? '').replace('Bearer ', '');
@@ -71,7 +72,7 @@ export default async function showcaseRoutes(fastify: FastifyInstance) {
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'ANTHROPIC_API_KEY not configured') {
-                    return reply.status(500).send({ error: message });
+                    throw new ExternalServiceError('Anthropic', message);
                 }
                 throw err;
             }
@@ -82,13 +83,8 @@ export default async function showcaseRoutes(fastify: FastifyInstance) {
         '/mock/seed',
         { preHandler: [requireRole(['admin'])] },
         async (_request, reply) => {
-            try {
-                const result = await seedMockData(agentRepo, auditRepo, approvalRepo, userRepo);
-                return reply.status(200).send(result);
-            } catch (err) {
-                const message = err instanceof Error ? err.message : 'Unknown error';
-                return reply.status(500).send({ error: message });
-            }
+            const result = await seedMockData(agentRepo, auditRepo, approvalRepo, userRepo);
+            return reply.status(200).send(result);
         },
     );
 }

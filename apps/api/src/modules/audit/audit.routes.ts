@@ -7,6 +7,7 @@ import {
 } from './audit.schema.js';
 import { authenticate } from '../../plugins/auth.js';
 import { calculateCost } from '../../utils/cost-calculator.js';
+import { NotFoundError, ValidationError, AuthorizationError } from '../../errors/index.js';
 
 export default async function auditRoutes(
     fastify: FastifyInstance,
@@ -31,15 +32,12 @@ export default async function auditRoutes(
         async (request, reply) => {
             const parsed = AuditEventSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const agentExists = await agentService.getAgentById(parsed.data.agentId);
             if (!agentExists) {
-                return reply.status(400).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', parsed.data.agentId);
             }
 
             const costUsd = calculateCost(
@@ -74,16 +72,13 @@ export default async function auditRoutes(
         async (request, reply) => {
             const parsed = AuditQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             if (parsed.data.export === 'csv') {
                 const role = request.user.role;
                 if (role !== 'admin' && role !== 'approver') {
-                    return reply.status(403).send({ error: 'Insufficient permissions' });
+                    throw new AuthorizationError('admin, approver');
                 }
 
                 const csv = await auditService.exportCsv(parsed.data);
@@ -106,15 +101,12 @@ export default async function auditRoutes(
         async (request, reply) => {
             const paramsParsed = TraceIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const trace = await auditService.getTrace(paramsParsed.data.traceId);
             if (!trace) {
-                return reply.status(404).send({ error: 'Trace not found' });
+                throw new NotFoundError('Trace', paramsParsed.data.traceId);
             }
 
             return reply.status(200).send(trace);
@@ -127,15 +119,12 @@ export default async function auditRoutes(
         async (request, reply) => {
             const paramsParsed = AgentIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const agentExists = await agentService.getAgentById(paramsParsed.data.id);
             if (!agentExists) {
-                return reply.status(404).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', paramsParsed.data.id);
             }
 
             const stats = await auditService.getAgentStats(paramsParsed.data.id);

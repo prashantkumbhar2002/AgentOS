@@ -5,6 +5,7 @@ import {
     AgentLeaderboardQuerySchema,
 } from './analytics.schema.js';
 import { authenticate } from '../../plugins/auth.js';
+import { ValidationError } from '../../errors/index.js';
 
 export default async function analyticsRoutes(
     fastify: FastifyInstance,
@@ -17,10 +18,7 @@ export default async function analyticsRoutes(
         async (request, reply) => {
             const parsed = CostTimelineQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const result = await analyticsService.getCostTimeline(
@@ -37,10 +35,7 @@ export default async function analyticsRoutes(
         async (request, reply) => {
             const parsed = DateRangeQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             try {
@@ -52,7 +47,7 @@ export default async function analyticsRoutes(
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'fromDate must be before toDate') {
-                    return reply.status(400).send({ error: message });
+                    throw new ValidationError(message);
                 }
                 throw err;
             }
@@ -65,10 +60,7 @@ export default async function analyticsRoutes(
         async (request, reply) => {
             const parsed = DateRangeQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             try {
@@ -80,7 +72,7 @@ export default async function analyticsRoutes(
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'fromDate must be before toDate') {
-                    return reply.status(400).send({ error: message });
+                    throw new ValidationError(message);
                 }
                 throw err;
             }
@@ -93,10 +85,7 @@ export default async function analyticsRoutes(
         async (request, reply) => {
             const parsed = AgentLeaderboardQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const result = await analyticsService.getAgentLeaderboard(

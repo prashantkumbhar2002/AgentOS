@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { LoginSchema, RoleEnum } from '@agentos/types';
 import type { Role } from '@agentos/types';
 import { authenticate } from '../../plugins/auth.js';
+import { AuthenticationError, ValidationError } from '../../errors/index.js';
 
 export default async function usersRoutes(
     fastify: FastifyInstance,
@@ -18,22 +19,19 @@ export default async function usersRoutes(
         async (request, reply) => {
             const parsed = LoginSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const { email, password } = parsed.data;
             const user = await userService.findByEmail(email);
 
             if (!user) {
-                return reply.status(401).send({ error: 'Invalid credentials' });
+                throw new AuthenticationError('TOKEN_INVALID');
             }
 
             const valid = await userService.comparePassword(password, user.passwordHash);
             if (!valid) {
-                return reply.status(401).send({ error: 'Invalid credentials' });
+                throw new AuthenticationError('TOKEN_INVALID');
             }
 
             const role = RoleEnum.parse(user.role);

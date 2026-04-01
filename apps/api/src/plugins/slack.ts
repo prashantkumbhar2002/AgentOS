@@ -2,6 +2,7 @@ import fp from 'fastify-plugin';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import crypto from 'node:crypto';
 import { env } from '../config/env.js';
+import { AuthenticationError, ValidationError } from '../errors/index.js';
 
 function verifySlackSignature(
     signingSecret: string,
@@ -32,7 +33,7 @@ export default fp(
                 const timestamp = request.headers['x-slack-request-timestamp'] as string;
 
                 if (!signature || !timestamp) {
-                    return reply.status(401).send({ error: 'Missing Slack signature' });
+                    throw new AuthenticationError('TOKEN_MISSING');
                 }
 
                 const bodyStr = typeof request.body === 'string'
@@ -40,7 +41,7 @@ export default fp(
                     : JSON.stringify(request.body);
 
                 if (!verifySlackSignature(env.SLACK_SIGNING_SECRET!, signature, timestamp, bodyStr)) {
-                    return reply.status(401).send({ error: 'Invalid Slack signature' });
+                    throw new AuthenticationError('TOKEN_INVALID');
                 }
 
                 let payload: Record<string, unknown>;
@@ -50,7 +51,7 @@ export default fp(
                         : request.body;
                     payload = parsed.payload ? JSON.parse(parsed.payload as string) : parsed;
                 } catch {
-                    return reply.status(400).send({ error: 'Invalid payload' });
+                    throw new ValidationError('Invalid payload');
                 }
 
                 const actions = payload['actions'] as Array<{ value: string }> | undefined;
@@ -62,7 +63,7 @@ export default fp(
                 const [action, ticketId] = actionValue.split(':');
 
                 if (!ticketId || (action !== 'approve' && action !== 'deny')) {
-                    return reply.status(400).send({ error: 'Invalid action' });
+                    throw new ValidationError('Invalid action');
                 }
 
                 const decision = action === 'approve' ? 'APPROVED' : 'DENIED';

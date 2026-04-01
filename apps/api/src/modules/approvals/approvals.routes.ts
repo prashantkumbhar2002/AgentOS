@@ -7,6 +7,7 @@ import {
 } from './approvals.schema.js';
 import { authenticate, requireRole } from '../../plugins/auth.js';
 import { getRiskLabel } from '../../utils/risk-label.js';
+import { NotFoundError, ValidationError, PolicyBlockedError, ConflictError } from '../../errors/index.js';
 
 export default async function approvalRoutes(
     fastify: FastifyInstance,
@@ -19,15 +20,12 @@ export default async function approvalRoutes(
         async (request, reply) => {
             const parsed = CreateApprovalSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const agentExists = await agentService.getAgentById(parsed.data.agentId);
             if (!agentExists) {
-                return reply.status(400).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', parsed.data.agentId);
             }
 
             const { label: riskTier } = getRiskLabel(parsed.data.riskScore);
@@ -42,11 +40,7 @@ export default async function approvalRoutes(
             }
 
             if (policy.effect === 'DENY') {
-                return reply.status(403).send({
-                    error: 'Action blocked by policy',
-                    policyName: policy.matchedPolicy?.name ?? 'Unknown',
-                    reason: policy.reason,
-                });
+                throw new PolicyBlockedError(parsed.data.actionType, policy.matchedPolicy?.name ?? 'Unknown');
             }
 
             const ticket = await approvalService.createTicket(parsed.data);
@@ -81,10 +75,7 @@ export default async function approvalRoutes(
         async (request, reply) => {
             const parsed = ApprovalQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const result = await approvalService.listTickets(parsed.data);
@@ -98,15 +89,12 @@ export default async function approvalRoutes(
         async (request, reply) => {
             const paramsParsed = ApprovalIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const ticket = await approvalService.getTicket(paramsParsed.data.id);
             if (!ticket) {
-                return reply.status(404).send({ error: 'Ticket not found' });
+                throw new NotFoundError('Ticket', paramsParsed.data.id);
             }
 
             return reply.status(200).send(ticket);
@@ -119,18 +107,12 @@ export default async function approvalRoutes(
         async (request, reply) => {
             const paramsParsed = ApprovalIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const bodyParsed = ApprovalDecisionSchema.safeParse(request.body);
             if (!bodyParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: bodyParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: bodyParsed.error.issues });
             }
 
             try {
@@ -142,7 +124,7 @@ export default async function approvalRoutes(
                 );
 
                 if (!result) {
-                    return reply.status(404).send({ error: 'Ticket not found' });
+                    throw new NotFoundError('Ticket', paramsParsed.data.id);
                 }
 
                 fastify.sse.broadcast({
@@ -174,7 +156,7 @@ export default async function approvalRoutes(
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'Ticket expired' || message === 'Ticket already resolved') {
-                    return reply.status(400).send({ error: message });
+                    throw new ConflictError(message);
                 }
                 throw err;
             }

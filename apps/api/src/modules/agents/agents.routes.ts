@@ -7,6 +7,13 @@ import {
     AgentListQuerySchema,
     AgentIdParamsSchema,
 } from './agents.schema.js';
+import {
+    NotFoundError,
+    ValidationError,
+    InvalidTransitionError,
+    AuthorizationError,
+    ConflictError,
+} from '../../errors/index.js';
 import { authenticate, requireRole } from '../../plugins/auth.js';
 import { validateStatusTransition } from './agents.service.js';
 
@@ -21,9 +28,8 @@ export default async function agentsRoutes(
         async (request, reply) => {
             const parsed = CreateAgentSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: parsed.error.issues,
                 });
             }
 
@@ -54,9 +60,8 @@ export default async function agentsRoutes(
         async (request, reply) => {
             const parsed = AgentListQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: parsed.error.issues,
                 });
             }
 
@@ -71,15 +76,14 @@ export default async function agentsRoutes(
         async (request, reply) => {
             const paramsParsed = AgentIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: paramsParsed.error.issues,
                 });
             }
 
             const detail = await agentService.getAgentById(paramsParsed.data.id);
             if (!detail) {
-                return reply.status(404).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', paramsParsed.data.id);
             }
 
             return reply.status(200).send(detail);
@@ -92,17 +96,15 @@ export default async function agentsRoutes(
         async (request, reply) => {
             const paramsParsed = AgentIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: paramsParsed.error.issues,
                 });
             }
 
             const bodyParsed = UpdateAgentSchema.safeParse(request.body);
             if (!bodyParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: bodyParsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: bodyParsed.error.issues,
                 });
             }
 
@@ -111,7 +113,7 @@ export default async function agentsRoutes(
                 bodyParsed.data,
             );
             if (!updated) {
-                return reply.status(404).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', paramsParsed.data.id);
             }
 
             return reply.status(200).send(updated);
@@ -124,23 +126,21 @@ export default async function agentsRoutes(
         async (request, reply) => {
             const paramsParsed = AgentIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: paramsParsed.error.issues,
                 });
             }
 
             const bodyParsed = UpdateAgentStatusSchema.safeParse(request.body);
             if (!bodyParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: bodyParsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: bodyParsed.error.issues,
                 });
             }
 
             const agent = await agentService.getAgentById(paramsParsed.data.id);
             if (!agent) {
-                return reply.status(404).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', paramsParsed.data.id);
             }
 
             const transition = validateStatusTransition(
@@ -148,7 +148,11 @@ export default async function agentsRoutes(
                 bodyParsed.data.status,
             );
             if (!transition.valid) {
-                return reply.status(400).send({ error: transition.message });
+                throw new InvalidTransitionError(
+                    agent.status,
+                    bodyParsed.data.status,
+                    transition.message,
+                );
             }
 
             const adminOnlyStatuses: AgentStatus[] = ['SUSPENDED', 'DEPRECATED'];
@@ -156,9 +160,7 @@ export default async function agentsRoutes(
                 adminOnlyStatuses.includes(bodyParsed.data.status) &&
                 request.user.role !== 'admin'
             ) {
-                return reply.status(403).send({
-                    error: 'Only admin can set SUSPENDED or DEPRECATED status',
-                });
+                throw new AuthorizationError('admin');
             }
 
             const result = await agentService.updateAgentStatus(
@@ -167,7 +169,7 @@ export default async function agentsRoutes(
                 request.user.id,
             );
             if (!result) {
-                return reply.status(404).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', paramsParsed.data.id);
             }
 
             fastify.sse.broadcast({
@@ -195,27 +197,24 @@ export default async function agentsRoutes(
         async (request, reply) => {
             const paramsParsed = AgentIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
+                throw new ValidationError('Validation failed', {
+                    issues: paramsParsed.error.issues,
                 });
             }
 
             const agent = await agentService.getAgentById(paramsParsed.data.id);
             if (!agent) {
-                return reply.status(404).send({ error: 'Agent not found' });
+                throw new NotFoundError('Agent', paramsParsed.data.id);
             }
 
             if (agent.status === 'ACTIVE') {
-                return reply.status(400).send({
-                    error: 'Cannot deprecate an ACTIVE agent. Suspend it first.',
-                });
+                throw new ConflictError(
+                    'Cannot deprecate an ACTIVE agent. Suspend it first.',
+                );
             }
 
             if (agent.status === 'DEPRECATED') {
-                return reply.status(400).send({
-                    error: 'Agent is already deprecated.',
-                });
+                throw new ConflictError('Agent is already deprecated.');
             }
 
             await agentService.updateAgentStatus(

@@ -9,6 +9,7 @@ import {
     PolicyEvaluationRequestSchema,
 } from './policies.schema.js';
 import { authenticate, requireRole } from '../../plugins/auth.js';
+import { NotFoundError, ValidationError, ConflictError } from '../../errors/index.js';
 
 export default async function policyRoutes(
     fastify: FastifyInstance,
@@ -21,10 +22,7 @@ export default async function policyRoutes(
         async (request, reply) => {
             const parsed = PolicyEvaluationRequestSchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             try {
@@ -38,7 +36,7 @@ export default async function policyRoutes(
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'Agent not found') {
-                    return reply.status(404).send({ error: message });
+                    throw new NotFoundError('Agent', parsed.data.agentId);
                 }
                 throw err;
             }
@@ -51,10 +49,7 @@ export default async function policyRoutes(
         async (request, reply) => {
             const parsed = CreatePolicySchema.safeParse(request.body);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             try {
@@ -63,7 +58,7 @@ export default async function policyRoutes(
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'Policy name already exists') {
-                    return reply.status(400).send({ error: message });
+                    throw new ConflictError(message);
                 }
                 throw err;
             }
@@ -76,10 +71,7 @@ export default async function policyRoutes(
         async (request, reply) => {
             const parsed = PolicyListQuerySchema.safeParse(request.query);
             if (!parsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: parsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
 
             const result = await policyService.listPolicies(parsed.data);
@@ -93,15 +85,12 @@ export default async function policyRoutes(
         async (request, reply) => {
             const paramsParsed = PolicyIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const policy = await policyService.getPolicyById(paramsParsed.data.id);
             if (!policy) {
-                return reply.status(404).send({ error: 'Policy not found' });
+                throw new NotFoundError('Policy', paramsParsed.data.id);
             }
 
             return reply.status(200).send(policy);
@@ -114,18 +103,12 @@ export default async function policyRoutes(
         async (request, reply) => {
             const paramsParsed = PolicyIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const bodyParsed = UpdatePolicySchema.safeParse(request.body);
             if (!bodyParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: bodyParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: bodyParsed.error.issues });
             }
 
             try {
@@ -134,13 +117,13 @@ export default async function policyRoutes(
                     bodyParsed.data,
                 );
                 if (!updated) {
-                    return reply.status(404).send({ error: 'Policy not found' });
+                    throw new NotFoundError('Policy', paramsParsed.data.id);
                 }
                 return reply.status(200).send(updated);
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'Policy name already exists') {
-                    return reply.status(400).send({ error: message });
+                    throw new ConflictError(message);
                 }
                 throw err;
             }
@@ -153,22 +136,19 @@ export default async function policyRoutes(
         async (request, reply) => {
             const paramsParsed = PolicyIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             try {
                 const result = await policyService.deletePolicy(paramsParsed.data.id);
                 if (!result) {
-                    return reply.status(404).send({ error: 'Policy not found' });
+                    throw new NotFoundError('Policy', paramsParsed.data.id);
                 }
                 return reply.status(200).send(result);
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message.startsWith('Cannot delete policy')) {
-                    return reply.status(400).send({ error: message });
+                    throw new ConflictError(message);
                 }
                 throw err;
             }
@@ -181,18 +161,12 @@ export default async function policyRoutes(
         async (request, reply) => {
             const paramsParsed = PolicyIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             const bodyParsed = PolicyAssignSchema.safeParse(request.body);
             if (!bodyParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: bodyParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: bodyParsed.error.issues });
             }
 
             try {
@@ -203,11 +177,14 @@ export default async function policyRoutes(
                 return reply.status(200).send(result);
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
-                if (message === 'Policy not found' || message === 'Agent not found') {
-                    return reply.status(404).send({ error: message });
+                if (message === 'Policy not found') {
+                    throw new NotFoundError('Policy', paramsParsed.data.id);
+                }
+                if (message === 'Agent not found') {
+                    throw new NotFoundError('Agent', bodyParsed.data.agentId);
                 }
                 if (message === 'Policy already assigned to this agent') {
-                    return reply.status(400).send({ error: message });
+                    throw new ConflictError(message);
                 }
                 throw err;
             }
@@ -220,10 +197,7 @@ export default async function policyRoutes(
         async (request, reply) => {
             const paramsParsed = PolicyUnassignParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
-                return reply.status(400).send({
-                    error: 'Validation failed',
-                    details: paramsParsed.error.issues,
-                });
+                throw new ValidationError('Validation failed', { issues: paramsParsed.error.issues });
             }
 
             try {
@@ -235,7 +209,7 @@ export default async function policyRoutes(
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'Assignment not found') {
-                    return reply.status(404).send({ error: message });
+                    throw new NotFoundError('Assignment', `${paramsParsed.data.id}:${paramsParsed.data.agentId}`);
                 }
                 throw err;
             }

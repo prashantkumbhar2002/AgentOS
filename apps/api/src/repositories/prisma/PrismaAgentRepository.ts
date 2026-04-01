@@ -153,7 +153,9 @@ export class PrismaAgentRepository implements IAgentRepository {
         await this.prisma.agent.update({
             where: { id },
             data: { lastActiveAt: new Date() },
-        }).catch(() => { });
+        }).catch((err: unknown) => {
+            console.warn('[PrismaAgentRepository] Failed to update lastActiveAt:', err instanceof Error ? err.message : err);
+        });
     }
 
     async findNameById(id: string): Promise<string | null> {
