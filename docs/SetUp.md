@@ -46,6 +46,7 @@ cp apps/web/.env.example apps/web/.env
 | `SLACK_SIGNING_SECRET` | — | No (Slack integration) |
 | `SLACK_CHANNEL_ID` | — | No (Slack integration) |
 | `ANTHROPIC_API_KEY` | — | No (Showcase agents) |
+| `SSE_SECRET` | (auto-generated default) | No (SSE token signing, min 32 chars) |
 
 **Environment variables** (`apps/web/.env`):
 
@@ -113,15 +114,15 @@ curl -s http://localhost:3000/api/auth/me \
 
 ```bash
 # List all agents
-curl -s http://localhost:3000/api/agents \
+curl -s http://localhost:3000/api/v1/agents \
   -H "Authorization: Bearer $TOKEN"
 
 # Get agent by ID
-curl -s http://localhost:3000/api/agents/<AGENT_ID> \
+curl -s http://localhost:3000/api/v1/agents/<AGENT_ID> \
   -H "Authorization: Bearer $TOKEN"
 
 # Register a new agent
-curl -s -X POST http://localhost:3000/api/agents \
+curl -s -X POST http://localhost:3000/api/v1/agents \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -139,21 +140,21 @@ curl -s -X POST http://localhost:3000/api/agents \
 
 ```bash
 # List approval tickets (default: PENDING first)
-curl -s "http://localhost:3000/api/approvals" \
+curl -s "http://localhost:3000/api/v1/approvals" \
   -H "Authorization: Bearer $TOKEN"
 
 # Get single ticket
-curl -s http://localhost:3000/api/approvals/<TICKET_ID> \
+curl -s http://localhost:3000/api/v1/approvals/<TICKET_ID> \
   -H "Authorization: Bearer $TOKEN"
 
 # Approve a ticket
-curl -s -X POST http://localhost:3000/api/approvals/<TICKET_ID>/decide \
+curl -s -X POST http://localhost:3000/api/v1/approvals/<TICKET_ID>/decide \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"decision": "APPROVED", "comment": "Looks good"}'
 
 # Deny a ticket
-curl -s -X POST http://localhost:3000/api/approvals/<TICKET_ID>/decide \
+curl -s -X POST http://localhost:3000/api/v1/approvals/<TICKET_ID>/decide \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"decision": "DENIED", "comment": "Too risky"}'
@@ -163,19 +164,19 @@ curl -s -X POST http://localhost:3000/api/approvals/<TICKET_ID>/decide \
 
 ```bash
 # List audit logs (paginated)
-curl -s "http://localhost:3000/api/audit/logs?page=1&limit=20" \
+curl -s "http://localhost:3000/api/v1/audit/logs?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 
 # Get trace details
-curl -s http://localhost:3000/api/audit/traces/<TRACE_ID> \
+curl -s http://localhost:3000/api/v1/audit/traces/<TRACE_ID> \
   -H "Authorization: Bearer $TOKEN"
 
 # Get agent-specific audit stats
-curl -s http://localhost:3000/api/audit/agents/<AGENT_ID>/stats \
+curl -s http://localhost:3000/api/v1/audit/stats/<AGENT_ID> \
   -H "Authorization: Bearer $TOKEN"
 
 # Export CSV (admin/approver only)
-curl -s "http://localhost:3000/api/audit/export" \
+curl -s "http://localhost:3000/api/v1/audit/logs?export=csv" \
   -H "Authorization: Bearer $TOKEN" \
   -o audit-export.csv
 ```
@@ -184,11 +185,11 @@ curl -s "http://localhost:3000/api/audit/export" \
 
 ```bash
 # List all policies
-curl -s http://localhost:3000/api/policies \
+curl -s http://localhost:3000/api/v1/policies \
   -H "Authorization: Bearer $TOKEN"
 
 # Create a policy
-curl -s -X POST http://localhost:3000/api/policies \
+curl -s -X POST http://localhost:3000/api/v1/policies \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -204,7 +205,7 @@ curl -s -X POST http://localhost:3000/api/policies \
   }'
 
 # Evaluate a policy (check what would happen)
-curl -s -X POST http://localhost:3000/api/policies/evaluate \
+curl -s -X POST http://localhost:3000/api/v1/policies/evaluate \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"agentId": "<AGENT_ID>", "actionType": "send_email", "riskTier": "HIGH"}'
@@ -214,23 +215,23 @@ curl -s -X POST http://localhost:3000/api/policies/evaluate \
 
 ```bash
 # Cost summary
-curl -s "http://localhost:3000/api/analytics/costs" \
+curl -s "http://localhost:3000/api/v1/analytics/costs" \
   -H "Authorization: Bearer $TOKEN"
 
 # Cost timeline (daily, per agent)
-curl -s "http://localhost:3000/api/analytics/costs/timeline?days=7" \
+curl -s "http://localhost:3000/api/v1/analytics/costs/timeline?days=7" \
   -H "Authorization: Bearer $TOKEN"
 
 # Usage stats
-curl -s "http://localhost:3000/api/analytics/usage" \
+curl -s "http://localhost:3000/api/v1/analytics/usage" \
   -H "Authorization: Bearer $TOKEN"
 
 # Agent leaderboard
-curl -s "http://localhost:3000/api/analytics/agents" \
+curl -s "http://localhost:3000/api/v1/analytics/agents" \
   -H "Authorization: Bearer $TOKEN"
 
 # Model usage breakdown
-curl -s "http://localhost:3000/api/analytics/models" \
+curl -s "http://localhost:3000/api/v1/analytics/models" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -238,17 +239,17 @@ curl -s "http://localhost:3000/api/analytics/models" \
 
 ```bash
 # Seed mock data (admin only) — creates 3 mock agents, 50 audit logs, 5 approvals
-curl -s -X POST http://localhost:3000/api/showcase/mock/seed \
+curl -s -X POST http://localhost:3000/api/v1/showcase/mock/seed \
   -H "Authorization: Bearer $TOKEN"
 
 # Run Email Draft Agent (requires ANTHROPIC_API_KEY)
-curl -s -X POST http://localhost:3000/api/showcase/email-agent/run \
+curl -s -X POST http://localhost:3000/api/v1/showcase/email-agent/run \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"task": "Send a welcome email to the new engineering team member"}'
 
 # Run Research Agent (requires ANTHROPIC_API_KEY)
-curl -s -X POST http://localhost:3000/api/showcase/research-agent/run \
+curl -s -X POST http://localhost:3000/api/v1/showcase/research-agent/run \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"topic": "Latest developments in AI agent safety"}'

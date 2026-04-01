@@ -123,7 +123,7 @@ The analytics dashboard answers questions like:
 
 The dashboard maintains a **persistent connection** to the API server using Server-Sent Events (SSE). This is the green/red "Connected" / "Disconnected" indicator you see in the top bar.
 
-**How it works**: When you log in, the browser opens a long-lived HTTP connection to the API (`/api/events/stream`). The server pushes events down this connection in real-time whenever something happens — an agent makes an LLM call, a tool is invoked, an approval ticket is created or resolved.
+**How it works**: When you log in, the browser first requests a short-lived SSE token (`POST /api/v1/events/token`, 30-second expiry), then opens a long-lived HTTP connection (`GET /api/v1/events/stream?token=<sseToken>`). The main JWT is never sent in a query string. The server pushes events down this connection in real-time whenever something happens — an agent makes an LLM call, a tool is invoked, an approval ticket is created or resolved.
 
 **What happens on each event**:
 - The **Live Activity Feed** on the Dashboard home page shows events as they arrive, auto-scrolling with the latest at the top (capped at 50 entries)
@@ -308,14 +308,19 @@ Open http://localhost:5173 and sign in as `admin@agentos.dev` / `admin123`.
 
 ## Development Roadmap
 
-| EPIC | Feature | Status |
-|------|---------|--------|
-| 2 | JWT Auth, RBAC, Agent CRUD, Audit Logging | Done |
-| 4 | Approval Workflows + Slack Integration | Done |
-| 5 | Policy Engine | Done |
-| 6 | Analytics & Cost Tracking | Done |
-| 7 | Showcase Agents & Mock Data | Done |
-| 8 | React Dashboard (8 pages) | Done |
+| EPIC / FIX | Feature | Status |
+|------------|---------|--------|
+| EPIC 2 | JWT Auth, RBAC, Agent CRUD, Audit Logging | Done |
+| EPIC 4 | Approval Workflows + Slack Integration | Done |
+| EPIC 5 | Policy Engine | Done |
+| EPIC 6 | Analytics & Cost Tracking | Done |
+| EPIC 7 | Showcase Agents & Mock Data | Done |
+| EPIC 8 | React Dashboard (8 pages) | Done |
+| FIX-01 | Repository Pattern + Unit-Testable Business Logic | Done |
+| FIX-02 | Custom Error Hierarchy + Global Error Handler | Done |
+| FIX-03 | Security Headers + Request ID + SSE Token Fix | Done |
+| FIX-04 | Fix N+1 Query Performance | Done |
+| FIX-05 | API Versioning (`/api/v1/` prefix) | Done |
 
 ---
 

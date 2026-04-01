@@ -1,9 +1,9 @@
 # AgentOS — Technical Design Document
 
 **Project**: AgentOS — AI Agent Governance & Management Platform
-**Version**: 3.0.0
+**Version**: 4.0.0
 **Date**: 2026-03-21 (updated)
-**Branch**: `002-jwt-auth-rbac`
+**Branch**: `feat/enhancements/v1`
 
 ---
 
@@ -18,14 +18,18 @@
 7. [Plugins & Middleware](#7-plugins--middleware)
 8. [Feature Breakdown by EPIC](#8-feature-breakdown-by-epic)
 9. [Repository Pattern & Dependency Injection (FIX-01)](#9-repository-pattern--dependency-injection-fix-01)
-10. [GovernanceClient SDK](#10-governanceclient-sdk)
-11. [Shared Types Package](#11-shared-types-package)
-12. [Testing Strategy](#12-testing-strategy)
-13. [Security & RBAC](#13-security--rbac)
-14. [Configuration & Environment](#14-configuration--environment)
-15. [Frontend Architecture (EPIC 8)](#15-frontend-architecture-epic-8)
-16. [Constitution & Design Principles](#16-constitution--design-principles)
-17. [Glossary](#17-glossary)
+10. [Error Hierarchy & Global Error Handler (FIX-02)](#10-error-hierarchy--global-error-handler-fix-02)
+11. [Security Headers, Request ID & SSE Token (FIX-03)](#11-security-headers-request-id--sse-token-fix-03)
+12. [N+1 Query Optimization (FIX-04)](#12-n1-query-optimization-fix-04)
+13. [API Versioning (FIX-05)](#13-api-versioning-fix-05)
+14. [GovernanceClient SDK](#14-governanceclient-sdk)
+15. [Shared Types Package](#15-shared-types-package)
+16. [Testing Strategy](#16-testing-strategy)
+17. [Security & RBAC](#17-security--rbac)
+18. [Configuration & Environment](#18-configuration--environment)
+19. [Frontend Architecture (EPIC 8)](#19-frontend-architecture-epic-8)
+20. [Constitution & Design Principles](#20-constitution--design-principles)
+21. [Glossary](#21-glossary)
 
 ---
 
@@ -98,27 +102,31 @@ The platform consists of a Fastify REST API backend and a React SPA frontend, de
 ### Request Flow
 
 1. Client sends HTTP request with JWT Bearer token
-2. Fastify rate limiter checks request count
-3. `authenticate` or `requireRole` preHandler validates JWT and RBAC
-4. Zod schema validates request body/query/params
-5. Route handler calls service from `fastify.services.*` (injected via DI container)
-6. Service executes business logic, delegates data access to repository interfaces
-7. Prisma repository implementation executes actual database queries
-8. SSE broadcast for real-time events (approvals created/resolved)
-9. BullMQ enqueues background jobs (Slack notifications)
+2. Helmet adds security headers (CSP, X-Frame-Options, HSTS, etc.)
+3. Request ID assigned via `x-request-id` header (client-provided or UUID-generated)
+4. Fastify rate limiter checks request count
+5. `authenticate` or `requireRole` preHandler validates JWT and RBAC
+6. Zod schema validates request body/query/params
+7. Route handler calls service from `fastify.services.*` (injected via DI container)
+8. Service executes business logic, delegates data access to repository interfaces
+9. Prisma repository implementation executes actual database queries
+10. On error: global error handler catches and returns typed response with `requestId`
+11. SSE broadcast for real-time events (approvals created/resolved)
+12. BullMQ enqueues background jobs (Slack notifications)
+13. Response includes `x-request-id` header for traceability
 
 ### Governance Flow (for AI Agents)
 
 ```
 Agent Action → GovernanceClient.requestApproval()
-  → POST /api/approvals
+  → POST /api/v1/approvals
     → Policy Evaluator checks rules
       → ALLOW     → auto-approve, return immediately
-      → DENY      → reject with 403, log event
+      → DENY      → reject with PolicyBlockedError (403)
       → REQUIRE   → create ApprovalTicket
         → Slack notification (via BullMQ)
         → SSE broadcast to connected approvers
-        → Agent polls GET /api/approvals/:id until resolved
+        → Agent polls GET /api/v1/approvals/:id until resolved
 ```
 
 ---
@@ -136,7 +144,8 @@ Agent Action → GovernanceClient.requestApproval()
 | **Queue** | BullMQ | latest |
 | **Cache/Broker** | Redis (ioredis) | latest |
 | **Validation** | Zod | latest |
-| **Auth** | JWT (@fastify/jwt) + bcrypt | — |
+| **Auth** | JWT (@fastify/jwt) + bcrypt + jsonwebtoken (SSE tokens) | — |
+| **Security** | @fastify/helmet | latest |
 | **AI SDK** | @anthropic-ai/sdk | ^0.39.0 |
 | **Messaging** | @slack/web-api | latest |
 | **Testing** | Vitest + Supertest | v3 / v7 |
@@ -194,8 +203,12 @@ AgentOS/
 │           │       ├── MockAuditRepository.ts
 │           │       ├── MockApprovalRepository.ts
 │           │       └── MockPolicyRepository.ts
+│           ├── errors/
+│           │   ├── AppError.ts       # Base error + 8 typed subclasses
+│           │   └── index.ts          # Barrel export
 │           ├── plugins/
-│           │   ├── auth.ts           # JWT + RBAC middleware
+│           │   ├── auth.ts           # JWT + RBAC middleware (throws typed errors)
+│           │   ├── errorHandler.ts   # Global Fastify error handler
 │           │   ├── prisma.ts         # PrismaClient singleton + ServiceContainer
 │           │   ├── sse.ts            # SSE fan-out manager
 │           │   ├── bullmq.ts         # BullMQ notification queue
@@ -259,7 +272,11 @@ AgentOS/
 │   ├── 007-analytics-cost-tracking/
 │   ├── 008-showcase-agents/
 │   ├── 009-react-dashboard/
-│   └── 010-repository-pattern/      # FIX-01: Repository pattern refactor
+│   ├── 010-repository-pattern/      # FIX-01: Repository pattern refactor
+│   ├── 011-error-hierarchy/         # FIX-02: Custom error hierarchy
+│   ├── 012-security-headers/        # FIX-03: Security headers + SSE token
+│   ├── 013-fix-n-plus-1/            # FIX-04: N+1 query optimization
+│   └── 014-api-versioning/          # FIX-05: API versioning
 └── docs/
     └── TECHNICAL_DESIGN.md          # This document
 ```
@@ -403,9 +420,9 @@ User ──────────────────┐
 
 ## 6. API Reference
 
-All endpoints (except `/api/auth/login` and `/api/health`) require `Authorization: Bearer <JWT>`.
+All versioned endpoints require `Authorization: Bearer <JWT>`. Business endpoints are prefixed with `/api/v1/`. Auth, health, and Slack endpoints are unversioned. Old unversioned business paths (e.g., `/api/agents`) return 301 redirects to their `/api/v1/` equivalents.
 
-### Authentication (`/api/auth`)
+### Authentication (`/api/auth`) — Unversioned
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -413,75 +430,90 @@ All endpoints (except `/api/auth/login` and `/api/health`) require `Authorizatio
 | POST | `/api/auth/refresh` | Bearer JWT | Refresh JWT token |
 | GET | `/api/auth/me` | Bearer JWT | Get current user profile |
 
-### Agents (`/api/agents`)
+### Agents (`/api/v1/agents`)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/agents` | Authenticated | Register a new agent |
-| GET | `/api/agents` | Authenticated | List agents (filter, paginate, search) |
-| GET | `/api/agents/:id` | Authenticated | Get agent details with tools and policies |
-| PATCH | `/api/agents/:id` | Admin | Update agent fields |
-| PATCH | `/api/agents/:id/status` | Admin/Approver | Transition agent status |
-| DELETE | `/api/agents/:id` | Admin | Soft-delete (deprecate) agent |
+| POST | `/api/v1/agents` | Authenticated | Register a new agent |
+| GET | `/api/v1/agents` | Authenticated | List agents (filter, paginate, search) |
+| GET | `/api/v1/agents/:id` | Authenticated | Get agent details with tools and policies |
+| PATCH | `/api/v1/agents/:id` | Admin | Update agent fields |
+| PATCH | `/api/v1/agents/:id/status` | Admin/Approver | Transition agent status |
+| DELETE | `/api/v1/agents/:id` | Admin | Soft-delete (deprecate) agent |
 
-### Audit (`/api/audit`)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/audit/log` | Authenticated | Ingest an audit event |
-| GET | `/api/audit/logs` | Authenticated | Query logs (JSON or CSV export) |
-| GET | `/api/audit/traces/:traceId` | Authenticated | Get all events for a trace |
-| GET | `/api/audit/stats/:id` | Authenticated | Per-agent statistics |
-
-### Approvals (`/api/approvals`)
+### Audit (`/api/v1/audit`)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/approvals` | Authenticated | Create approval ticket (policy-evaluated) |
-| GET | `/api/approvals` | Authenticated | List tickets (filter by status, agent) |
-| GET | `/api/approvals/:id` | Authenticated | Get ticket details |
-| PATCH | `/api/approvals/:id/decide` | Admin/Approver | Approve or deny a ticket |
+| POST | `/api/v1/audit/log` | Authenticated | Ingest an audit event |
+| GET | `/api/v1/audit/logs` | Authenticated | Query logs (JSON or CSV export) |
+| GET | `/api/v1/audit/traces/:traceId` | Authenticated | Get all events for a trace |
+| GET | `/api/v1/audit/stats/:id` | Authenticated | Per-agent statistics |
 
-### Policies (`/api/policies`)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/policies` | Admin | Create a named policy with rules |
-| GET | `/api/policies` | Authenticated | List all policies |
-| GET | `/api/policies/:id` | Authenticated | Get policy with rules and agents |
-| PATCH | `/api/policies/:id` | Admin | Update policy or its rules |
-| DELETE | `/api/policies/:id` | Admin | Delete policy (fails if assigned) |
-| POST | `/api/policies/:id/assign` | Admin | Assign policy to an agent |
-| DELETE | `/api/policies/:id/assign/:agentId` | Admin | Unassign policy from agent |
-| POST | `/api/policies/evaluate` | Authenticated | Evaluate policies for an action |
-
-### Analytics (`/api/analytics`)
+### Approvals (`/api/v1/approvals`)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/analytics/costs` | Authenticated | Org cost summary (today, 7d, 30d, total, WoW change) |
-| GET | `/api/analytics/costs/timeline` | Authenticated | Daily cost timeline per agent (zero-filled) |
-| GET | `/api/analytics/usage` | Authenticated | Usage stats (runs, LLM/tool calls, approval breakdown) |
-| GET | `/api/analytics/agents` | Authenticated | Agent leaderboard (cost, runs, error rate, health) |
-| GET | `/api/analytics/models` | Authenticated | Model usage breakdown (calls, tokens, cost) |
+| POST | `/api/v1/approvals` | Authenticated | Create approval ticket (policy-evaluated) |
+| GET | `/api/v1/approvals` | Authenticated | List tickets (filter by status, agent) |
+| GET | `/api/v1/approvals/:id` | Authenticated | Get ticket details |
+| PATCH | `/api/v1/approvals/:id/decide` | Admin/Approver | Approve or deny a ticket |
 
-### Showcase (`/api/showcase`)
+### Policies (`/api/v1/policies`)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/showcase/email-agent/run` | Authenticated | Run email draft agent (requires ANTHROPIC_API_KEY) |
-| POST | `/api/showcase/research-agent/run` | Authenticated | Run research agent (requires ANTHROPIC_API_KEY) |
-| POST | `/api/showcase/mock/seed` | Admin | Seed mock agents, logs, and approvals |
+| POST | `/api/v1/policies` | Admin | Create a named policy with rules |
+| GET | `/api/v1/policies` | Authenticated | List all policies |
+| GET | `/api/v1/policies/:id` | Authenticated | Get policy with rules and agents |
+| PATCH | `/api/v1/policies/:id` | Admin | Update policy or its rules |
+| DELETE | `/api/v1/policies/:id` | Admin | Delete policy (fails if assigned) |
+| POST | `/api/v1/policies/:id/assign` | Admin | Assign policy to an agent |
+| DELETE | `/api/v1/policies/:id/assign/:agentId` | Admin | Unassign policy from agent |
+| POST | `/api/v1/policies/evaluate` | Authenticated | Evaluate policies for an action |
 
-### System
+### Analytics (`/api/v1/analytics`)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/analytics/costs` | Authenticated | Org cost summary (today, 7d, 30d, total, WoW change) |
+| GET | `/api/v1/analytics/costs/timeline` | Authenticated | Daily cost timeline per agent (zero-filled) |
+| GET | `/api/v1/analytics/usage` | Authenticated | Usage stats (runs, LLM/tool calls, approval breakdown) |
+| GET | `/api/v1/analytics/agents` | Authenticated | Agent leaderboard (cost, runs, error rate, health) |
+| GET | `/api/v1/analytics/models` | Authenticated | Model usage breakdown (calls, tokens, cost) |
+
+### Showcase (`/api/v1/showcase`)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/showcase/email-agent/run` | Authenticated | Run email draft agent (requires ANTHROPIC_API_KEY) |
+| POST | `/api/v1/showcase/research-agent/run` | Authenticated | Run research agent (requires ANTHROPIC_API_KEY) |
+| POST | `/api/v1/showcase/mock/seed` | Admin | Seed mock agents, logs, and approvals |
+
+### System — Unversioned
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/health` | None | Health check |
-| GET | `/api/events/stream?token=<JWT>` | JWT via query | SSE stream for real-time events |
+| POST | `/api/v1/events/token` | Bearer JWT | Get short-lived SSE token (30s expiry) |
+| GET | `/api/v1/events/stream?token=<sseToken>` | SSE token | SSE stream for real-time events |
 | POST | `/slack/interactions` | Slack signature | Slack interactive approve/deny |
 
-**Total: 30 endpoints**
+### Backward Compatibility Redirects
+
+All old unversioned business paths return **301 Permanent Redirect** to their `/api/v1/` equivalents. Query parameters and path segments are preserved.
+
+| Old Path | Redirects To |
+|----------|-------------|
+| `/api/agents/*` | `/api/v1/agents/*` |
+| `/api/audit/*` | `/api/v1/audit/*` |
+| `/api/approvals/*` | `/api/v1/approvals/*` |
+| `/api/policies/*` | `/api/v1/policies/*` |
+| `/api/analytics/*` | `/api/v1/analytics/*` |
+| `/api/showcase/*` | `/api/v1/showcase/*` |
+| `/api/events/*` | `/api/v1/events/*` |
+
+**Total: 31 endpoints + 7 redirect prefixes**
 
 ---
 
@@ -489,9 +521,18 @@ All endpoints (except `/api/auth/login` and `/api/health`) require `Authorizatio
 
 ### Auth Plugin (`plugins/auth.ts`)
 - Registers `@fastify/jwt` with configurable secret and expiry
-- Exports `authenticate` preHandler — validates Bearer JWT, returns 401 on failure
-- Exports `requireRole(roles[])` preHandler — runs authenticate, then checks `request.user.role` against allowed roles, returns 403 on mismatch
+- Exports `authenticate` preHandler — validates Bearer JWT, throws `AuthenticationError` on failure (no string matching)
+- Exports `requireRole(roles[])` preHandler — runs authenticate, then checks `request.user.role` against allowed roles, throws `AuthorizationError` on mismatch
 - JWT payload shape: `{ id, email, name, role }`
+
+### Error Handler Plugin (`plugins/errorHandler.ts`) — *Added in FIX-02*
+- Registers a global `setErrorHandler` on the Fastify instance
+- Handles 4 error categories:
+  1. **AppError instances** — uses `statusCode` and `code` from the typed error class, logs at `warn` level
+  2. **Fastify validation errors** — returns 400 with `VALIDATION_ERROR` code and validation details
+  3. **JWT errors** — maps `FST_JWT_*` error codes to `AuthenticationError` responses
+  4. **Unknown errors** — logs at `error` level, returns 500 with generic message in production (full message in dev)
+- Every error response includes `requestId` for traceability
 
 ### Prisma Plugin (`plugins/prisma.ts`)
 - Creates a singleton `PrismaClient` with dev-mode query logging
@@ -664,6 +705,79 @@ Introduced a clean separation between business logic and data access:
 
 **Key implementation files**: `container.ts`, `types/dto.ts`, `repositories/interfaces/*`, `repositories/prisma/*`, `repositories/mock/*`, all `*.service.ts`, all `*.unit.test.ts`
 
+### FIX-02 — Custom Error Hierarchy + Global Error Handler
+
+| Aspect | Detail |
+|--------|--------|
+| **Scope** | Error handling standardization |
+| **Tasks** | 20 (across 6 phases) |
+| **Files Created** | 4 new files |
+| **Files Modified** | 10 existing files |
+
+Replaced all ad-hoc error handling with a typed error hierarchy and single global Fastify error handler:
+
+1. **Error Classes** — Base `AppError` class + 8 typed subclasses: `NotFoundError`, `ValidationError`, `AuthenticationError`, `AuthorizationError`, `ConflictError`, `InvalidTransitionError`, `PolicyBlockedError`, `ExternalServiceError`
+2. **Global Error Handler** — `plugins/errorHandler.ts` catches all errors, maps them to consistent JSON responses with `error`, `message`, `details`, and `requestId`
+3. **Route Refactor** — All `reply.status(4xx).send()` calls across 8 route files and 2 plugins replaced with `throw new AppError(...)`
+4. **Auth Plugin** — No more `error.message.includes('expired')` string matching; uses typed `AuthenticationError` with reason codes (`TOKEN_EXPIRED`, `TOKEN_INVALID`, `TOKEN_MISSING`)
+5. **Zero `.catch(() => {})` patterns** — all silent error swallowing removed
+
+**Key implementation files**: `errors/AppError.ts`, `errors/index.ts`, `plugins/errorHandler.ts`, all `*.routes.ts`, `plugins/auth.ts`
+
+### FIX-03 — Security Headers + Request ID + SSE Token Fix
+
+| Aspect | Detail |
+|--------|--------|
+| **Scope** | Security hardening |
+| **Tasks** | 12 (across 6 phases) |
+| **Files Created** | 2 new test files |
+| **Files Modified** | 4 existing files |
+
+Three security improvements:
+
+1. **Security Headers** — `@fastify/helmet` adds X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Content-Security-Policy, X-DNS-Prefetch-Control, X-Permitted-Cross-Domain-Policies. CSP customized for Tailwind (unsafe-inline styles) and SSE (crossOriginEmbedderPolicy disabled).
+2. **Request Correlation ID** — Every request gets an `x-request-id` (client-provided or UUID-generated, truncated to 64 chars). Included in all logs and error responses. Returned in response headers.
+3. **SSE Token Fix** — Main JWT no longer sent in SSE query string. New flow: `POST /api/v1/events/token` returns a 30-second `sseToken` (signed with separate `SSE_SECRET`), client connects to `GET /api/v1/events/stream?token=<sseToken>`. Frontend `useSSE` hook updated accordingly.
+
+**Key implementation files**: `app.ts`, `config/env.ts`, `hooks/useSSE.ts`, `security.test.ts`, `sse-token.test.ts`
+
+### FIX-04 — Fix N+1 Query Performance
+
+| Aspect | Detail |
+|--------|--------|
+| **Scope** | Database query optimization |
+| **Tasks** | 7 (across 5 phases) |
+| **Files Modified** | 2 repository files |
+| **Tests Added** | 3 |
+
+Eliminated N+1 query patterns in the repository layer:
+
+1. **Agent List** — `PrismaAgentRepository.findMany()` replaced `Promise.all(agents.map(=> auditLog.aggregate()))` (50 queries for 50 agents) with a single `auditLog.groupBy({ by: ['agentId'] })` + `Map` lookup. Reduces query count from N+1 to 2.
+2. **Analytics Cost Aggregation** — `PrismaAnalyticsRepository.getCostAggregates()` replaced sequential `for` loop with `Promise.all(ranges.map(...))` for parallel execution.
+3. **Verification** — Unit tests assert `groupBy` is called exactly once (not N times).
+
+**Key implementation files**: `PrismaAgentRepository.ts`, `PrismaAnalyticsRepository.ts`, `PrismaAgentRepository.test.ts`
+
+### FIX-05 — API Versioning
+
+| Aspect | Detail |
+|--------|--------|
+| **Scope** | Route versioning + backward compatibility |
+| **Tasks** | 14 (across 5 phases) |
+| **Files Modified** | 9 (1 backend + 2 frontend + 6 test files) |
+| **Files Created** | 1 new test file |
+| **Tests Added** | 15 |
+
+Added version prefix to all business-logic endpoints:
+
+1. **Versioned Routes** — All business endpoints moved from `/api/agents` to `/api/v1/agents`, etc. Applies to: agents, audit, approvals, policies, analytics, showcase, events.
+2. **Unversioned (stable)** — `/api/health`, `/api/auth/*`, `/slack/interactions` remain at current paths.
+3. **301 Redirects** — Old unversioned paths redirect to `/api/v1/` equivalents, preserving path segments and query parameters. All HTTP methods supported.
+4. **Frontend Updated** — `lib/api.ts` and `useSSE.ts` updated to use `/api/v1/` prefix.
+5. **Tests Updated** — 6 integration test files + 1 new redirect test file (15 tests).
+
+**Key implementation files**: `app.ts`, `lib/api.ts`, `hooks/useSSE.ts`, `api-versioning.test.ts`
+
 ---
 
 ## 9. Repository Pattern & Dependency Injection (FIX-01)
@@ -782,7 +896,157 @@ const service = new AgentService(agentRepo, auditRepo, ...);
 
 ---
 
-## 10. GovernanceClient SDK
+## 10. Error Hierarchy & Global Error Handler (FIX-02)
+
+### 10.1 Error Class Hierarchy
+
+All error classes live in `apps/api/src/errors/AppError.ts`:
+
+```
+AppError (base)
+├── NotFoundError         404  NOT_FOUND
+├── ValidationError       400  VALIDATION_ERROR
+├── AuthenticationError   401  TOKEN_EXPIRED | TOKEN_INVALID | TOKEN_MISSING
+├── AuthorizationError    403  FORBIDDEN
+├── ConflictError         409  CONFLICT
+├── InvalidTransitionError 400  INVALID_TRANSITION
+├── PolicyBlockedError    403  POLICY_BLOCKED
+└── ExternalServiceError  503  EXTERNAL_SERVICE_ERROR
+```
+
+Each error carries: `code` (machine-readable), `message` (human-readable), `statusCode` (HTTP), and optional `details` (structured metadata).
+
+### 10.2 Error Response Format
+
+All error responses follow a consistent shape:
+
+```json
+{
+  "error": "NOT_FOUND",
+  "message": "Agent with id 'abc-123' not found",
+  "details": { "resource": "Agent", "id": "abc-123" },
+  "requestId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### 10.3 Before/After
+
+| Aspect | Before (FIX-02) | After (FIX-02) |
+|--------|-----------------|----------------|
+| **Route error handling** | `reply.status(404).send({ error: 'Not found' })` scattered across routes | `throw new NotFoundError('Agent', id)` — routes have no error-formatting logic |
+| **Auth errors** | `error.message.includes('expired')` string matching | `throw new AuthenticationError('TOKEN_EXPIRED')` with typed reason codes |
+| **Error swallowing** | `.catch(() => {})` silently hid failures | All errors propagate to global handler |
+| **Response consistency** | Mixed formats across endpoints | Uniform `{ error, message, details, requestId }` |
+| **Logging** | Ad-hoc `console.log` | `warn` for 4xx, `error` for 5xx, with request path and ID |
+
+---
+
+## 11. Security Headers, Request ID & SSE Token (FIX-03)
+
+### 11.1 Security Headers (Helmet)
+
+`@fastify/helmet` is registered early in the plugin chain and adds:
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `X-Frame-Options` | `SAMEORIGIN` | Prevents clickjacking |
+| `X-Content-Type-Options` | `nosniff` | Prevents MIME-type sniffing |
+| `Strict-Transport-Security` | `max-age=15552000; includeSubDomains` | Enforces HTTPS |
+| `Content-Security-Policy` | `default-src 'self'; ...` | Controls resource loading |
+| `X-DNS-Prefetch-Control` | `off` | Prevents DNS prefetching leaks |
+| `X-Permitted-Cross-Domain-Policies` | `none` | Blocks cross-domain policy files |
+
+CSP customizations: `styleSrc` includes `'unsafe-inline'` (required by Tailwind), `connectSrc` includes `FRONTEND_URL`, `crossOriginEmbedderPolicy` disabled (required for SSE).
+
+### 11.2 Request Correlation ID
+
+Every request receives an `x-request-id`:
+
+1. If client sends `x-request-id` header → used as-is (truncated to 64 chars)
+2. If not provided → UUID v4 generated
+3. Included in all log lines via Fastify's logger
+4. Included in all error responses
+5. Returned in response `x-request-id` header
+
+### 11.3 SSE Token Flow
+
+Old (insecure): Main JWT sent in query string → logged everywhere.
+
+New (FIX-03):
+
+```
+1. Client: POST /api/v1/events/token (Bearer JWT in header)
+2. Server: Signs { userId, role, type: 'sse' } with SSE_SECRET, expiresIn: 30s
+3. Server: Returns { sseToken, expiresIn: 30 }
+4. Client: GET /api/v1/events/stream?token=<sseToken> (immediately)
+5. Server: Verifies sseToken with SSE_SECRET, checks type === 'sse'
+6. Server: Establishes SSE connection
+```
+
+The `sseToken` is a separate JWT signed with `SSE_SECRET` (not the main `JWT_SECRET`), contains only `{ userId, role, type }`, and expires in 30 seconds. Even if logged, it's useless after 30s and cannot be used for API authentication.
+
+---
+
+## 12. N+1 Query Optimization (FIX-04)
+
+### 12.1 Problem
+
+`PrismaAgentRepository.findMany()` executed N+1 queries when listing agents:
+
+```
+1 query: SELECT agents (findMany)
+N queries: SELECT aggregate(costUsd) WHERE agentId = ? (one per agent)
+```
+
+For 50 agents, this meant 51 database queries per list request.
+
+### 12.2 Solution
+
+Replaced per-agent `aggregate` calls with a single `groupBy`:
+
+```
+1 query: SELECT agents (findMany)
+1 query: SELECT agentId, SUM(costUsd) GROUP BY agentId WHERE agentId IN (...)
+```
+
+Results are stored in a `Map<agentId, cost>` for O(1) lookup per agent.
+
+Similarly, `PrismaAnalyticsRepository.getCostAggregates()` replaced a sequential `for` loop with `Promise.all()` to parallelize independent aggregate queries.
+
+---
+
+## 13. API Versioning (FIX-05)
+
+### 13.1 Versioning Strategy
+
+All business-logic endpoints are prefixed with `/api/v1/`. Stable infrastructure endpoints remain unversioned.
+
+| Category | Prefix | Endpoints |
+|----------|--------|-----------|
+| **Versioned** | `/api/v1/` | agents, audit, approvals, policies, analytics, showcase, events |
+| **Unversioned** | `/api/` | auth, health |
+| **Webhook** | `/slack/` | interactions |
+
+### 13.2 Backward Compatibility
+
+301 Permanent Redirects are registered for all old unversioned paths:
+
+- Applies to all HTTP methods (GET, POST, PATCH, DELETE)
+- Preserves path segments: `/api/agents/abc` → `/api/v1/agents/abc`
+- Preserves query parameters: `/api/agents?page=2` → `/api/v1/agents?page=2`
+
+### 13.3 Frontend Changes
+
+Only 2 files updated (centralized API configuration):
+
+- `apps/web/src/lib/api.ts` — all 24 versioned paths updated
+- `apps/web/src/hooks/useSSE.ts` — SSE token and stream paths updated
+
+Auth paths (`/api/auth/*`) remain unchanged in the frontend.
+
+---
+
+## 14. GovernanceClient SDK
 
 The SDK (`packages/governance-sdk`) is the interface between AI agents and the AgentOS platform. Every agent action flows through this client.
 
@@ -804,18 +1068,18 @@ interface GovernanceClientConfig {
 |--------|---------|
 | `constructor(config)` | Creates client, generates unique `traceId` |
 | `traceId: string` | Readonly UUID grouping all events in this session |
-| `logEvent(payload)` | POST to `/api/audit/log` — fire-and-forget audit event |
+| `logEvent(payload)` | POST to `/api/v1/audit/log` — fire-and-forget audit event |
 | `createMessage(params)` | Wraps `anthropic.messages.create()`, auto-logs `llm_call` event with tokens, cost, latency, success/failure |
 | `callTool(name, inputs, fn)` | Wraps arbitrary async function, auto-logs `tool_call` event with latency and success/failure |
-| `requestApproval(params)` | POST to `/api/approvals`, polls until resolved or timeout. Returns `{ decision, ticketId }` |
+| `requestApproval(params)` | POST to `/api/v1/approvals`, polls until resolved or timeout. Returns `{ decision, ticketId }` |
 
 ### Approval Polling
 
-`requestApproval` creates a ticket and polls `GET /api/approvals/:id` every `pollIntervalMs` (default 3s) until the status changes from PENDING or `maxWaitMs` (default 30min) elapses. Returns the final decision: `APPROVED`, `DENIED`, `EXPIRED`, `AUTO_APPROVED`, or `ERROR`.
+`requestApproval` creates a ticket and polls `GET /api/v1/approvals/:id` every `pollIntervalMs` (default 3s) until the status changes from PENDING or `maxWaitMs` (default 30min) elapses. Returns the final decision: `APPROVED`, `DENIED`, `EXPIRED`, `AUTO_APPROVED`, or `ERROR`.
 
 ---
 
-## 11. Shared Types Package
+## 15. Shared Types Package
 
 `packages/types` contains all Zod schemas and inferred TypeScript types, organized by domain. No type definitions are duplicated in `apps/`.
 
@@ -834,7 +1098,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 
 ---
 
-## 12. Testing Strategy
+## 16. Testing Strategy
 
 ### Framework
 
@@ -862,14 +1126,22 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 | `approvals.service.unit.test.ts` | Unit (mock) | 10 | ApprovalService: create, resolve, expire, list |
 | `policies.service.unit.test.ts` | Unit (mock) | 11 | PolicyService: CRUD, assign, duplicate guard, delete guard |
 | `policies.evaluator.unit.test.ts` | Unit (mock) | 11 | PolicyEvaluator: DENY wins, REQUIRE default, wildcards, conditions |
+| `AppError.test.ts` | Unit | 20 | Error class hierarchy: statusCode, code, message, name, details *(FIX-02)* |
+| `errorHandler.test.ts` | Unit | 8 | Global handler: AppError, Zod, JWT, unknown errors, requestId *(FIX-02)* |
+| `security.test.ts` | Unit | 10 | Security headers + request ID presence/passthrough/truncation *(FIX-03)* |
+| `sse-token.test.ts` | Unit | 7 | SSE token endpoint + stream auth with valid/invalid/expired tokens *(FIX-03)* |
+| `PrismaAgentRepository.test.ts` | Unit | 3 | N+1 fix: groupBy called once, empty list skip, default to 0 *(FIX-04)* |
+| `api-versioning.test.ts` | Unit | 15 | 301 redirects, path/query preservation, unversioned endpoints *(FIX-05)* |
 
-**Total: 16 test files, 214 test cases**
+**Total: 22 test files, 277 test cases**
 
 ### Test Categories
 
 - **Integration tests** (7 files, 108 cases): Use Supertest against the full Fastify app with a real test database. Each test file seeds its own data and cleans up.
 - **Service tests** (2 files, 28 cases): Test business logic with Prisma repository implementations against a real database but no HTTP layer.
 - **Unit tests — mock repos** (5 files, 54 cases): Pure business logic tests using in-memory mock repositories. No database, no network. Run in ~89ms total. *(Added in FIX-01)*
+- **Unit tests — infrastructure** (5 files, 45 cases): Error hierarchy, global handler, security headers, SSE token auth, redirect tests. *(Added in FIX-02/03/05)*
+- **Unit tests — repository** (1 file, 3 cases): Repository-level N+1 fix verification. *(Added in FIX-04)*
 - **Unit tests — pure functions** (3 files, 24 cases): Pure function tests (health score, cost calculator, SDK).
 
 ### Test Isolation
@@ -880,7 +1152,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 
 ---
 
-## 13. Security & RBAC
+## 17. Security & RBAC
 
 ### Authentication
 
@@ -913,6 +1185,22 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 | Showcase Run | Y | Y | Y | — |
 | Mock Seed | Y | — | — | — |
 
+### Security Headers *(Added in FIX-03)*
+
+All responses include security headers via `@fastify/helmet`:
+- `X-Frame-Options: SAMEORIGIN`
+- `X-Content-Type-Options: nosniff`
+- `Strict-Transport-Security: max-age=15552000; includeSubDomains`
+- `Content-Security-Policy: default-src 'self'; ...`
+- `X-DNS-Prefetch-Control: off`
+- `X-Permitted-Cross-Domain-Policies: none`
+
+### Request Correlation *(Added in FIX-03)*
+
+- Every request has an `x-request-id` (client-provided or auto-generated UUID)
+- Included in all log lines and error responses
+- Returned in response headers for client-side tracing
+
 ### Security Constraints
 
 - CORS restricted to `FRONTEND_URL` in production
@@ -920,10 +1208,12 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 - No hardcoded secrets — all via environment variables
 - No stack traces in production 500 responses
 - Slack signatures verified via HMAC-SHA256
+- SSE uses dedicated short-lived tokens (30s) — main JWT never in query strings *(FIX-03)*
+- Typed error hierarchy prevents accidental information leakage *(FIX-02)*
 
 ---
 
-## 14. Configuration & Environment
+## 18. Configuration & Environment
 
 ### Required Variables
 
@@ -945,6 +1235,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 | `SLACK_SIGNING_SECRET` | — | Slack request verification |
 | `SLACK_CHANNEL_ID` | — | Slack channel for notifications |
 | `ANTHROPIC_API_KEY` | — | Required for showcase agents only |
+| `SSE_SECRET` | (auto-generated default) | SSE token signing secret (min 32 chars) *(FIX-03)* |
 
 ### Seed Data
 
@@ -959,7 +1250,7 @@ Running `npx prisma db seed` creates:
 
 ---
 
-## 15. Frontend Architecture (EPIC 8)
+## 19. Frontend Architecture (EPIC 8)
 
 ### 15.1 Tech Stack & Build
 
@@ -1035,9 +1326,13 @@ User Action → Component → useMutation/useQuery (TanStack)
                          TanStack Cache → Re-render
 ```
 
-**SSE Flow**:
+**SSE Flow** *(updated in FIX-03)*:
 ```
-useSSE hook → EventSource(GET /api/events/stream?token=JWT)
+useSSE hook → POST /api/v1/events/token (Bearer JWT)
+                  ↓
+           Receive { sseToken, expiresIn: 30 }
+                  ↓
+           EventSource(GET /api/v1/events/stream?token=<sseToken>)
                   ↓
            Parse event type
                   ↓
@@ -1189,7 +1484,7 @@ Admin-only features (edit agent, register agent, export CSV) are conditionally r
 
 ---
 
-## 16. Constitution & Design Principles
+## 20. Constitution & Design Principles
 
 The project follows 8 non-negotiable principles defined in the constitution:
 
@@ -1212,7 +1507,7 @@ The project follows 8 non-negotiable principles defined in the constitution:
 - Business logic unit-tested with Vitest using mock repositories (no DB required)
 - External services mocked in tests
 - Isolated test database with transactional cleanup for integration tests
-- 54 pure unit tests run in ~89ms; 160 total integration/service tests with DB
+- 120 pure unit tests run in ~1.5s (mock repos, error classes, security, SSE, N+1, versioning); 136 total integration/service tests with DB
 
 ### IV. Security-First
 - Rate limits on all endpoints (100/min global, 10/15min on login)
@@ -1242,7 +1537,7 @@ The project follows 8 non-negotiable principles defined in the constitution:
 
 ---
 
-## 17. Glossary
+## 21. Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -1270,7 +1565,15 @@ The project follows 8 non-negotiable principles defined in the constitution:
 | **Service Container** | TypeScript interface exposing all service instances; decorated on `fastify.services` |
 | **DTO** | Data Transfer Object — typed return structure from services to routes (no raw Prisma types) |
 | **Constructor Injection** | Pattern where dependencies are passed to a class constructor rather than imported globally |
+| **AppError** | Base error class for the typed error hierarchy; all business errors extend this |
+| **Global Error Handler** | Fastify `setErrorHandler` plugin that catches all errors and returns consistent JSON responses |
+| **Request ID** | UUID correlation identifier (`x-request-id`) attached to every request for log traceability |
+| **Helmet** | `@fastify/helmet` plugin that sets security HTTP headers (CSP, HSTS, X-Frame-Options, etc.) |
+| **SSE Token** | Short-lived JWT (30s, signed with `SSE_SECRET`) used for SSE connection authentication |
+| **N+1 Query** | Anti-pattern where a list query triggers N additional queries (one per item); fixed with `groupBy` |
+| **API Versioning** | Route prefix strategy (`/api/v1/`) enabling future breaking changes without disrupting existing consumers |
+| **301 Redirect** | Permanent redirect from old unversioned paths to versioned equivalents for backward compatibility |
 
 ---
 
-*Document generated from codebase analysis on 2026-03-21. Updated 2026-03-21 with FIX-01 (Repository Pattern). Covers EPICs 2, 4, 5, 6, 7, 8 + FIX-01.*
+*Document generated from codebase analysis on 2026-03-21. Updated 2026-03-21 with FIX-01 through FIX-05. Covers EPICs 2, 4, 5, 6, 7, 8 + FIX-01 (Repository Pattern) + FIX-02 (Error Hierarchy) + FIX-03 (Security Headers) + FIX-04 (N+1 Fix) + FIX-05 (API Versioning).*
