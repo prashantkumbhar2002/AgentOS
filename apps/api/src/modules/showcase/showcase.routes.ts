@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../plugins/auth.js';
-import { EmailAgentInputSchema, ResearchAgentInputSchema } from './showcase.schema.js';
+import { EmailAgentInputSchema, ResearchAgentInputSchema, LocalAgentInputSchema } from './showcase.schema.js';
 import { runEmailDraftAgent } from '../../showcase-agents/emailDraftAgent.js';
 import { runResearchAgent } from '../../showcase-agents/researchAgent.js';
+import { runLocalEmailAgent } from '../../showcase-agents/localEmailAgent.js';
 import { seedMockData } from '../../showcase-agents/mockAgent.js';
 import { env } from '../../config/env.js';
 import type { GovernanceClientConfig } from '@agentos/governance-sdk';
@@ -73,6 +74,40 @@ export default async function showcaseRoutes(fastify: FastifyInstance) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'ANTHROPIC_API_KEY not configured') {
                     throw new ExternalServiceError('Anthropic', message);
+                }
+                throw err;
+            }
+        },
+    );
+
+    fastify.post(
+        '/local-agent/run',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            const parsed = LocalAgentInputSchema.safeParse(request.body);
+            if (!parsed.success) {
+                throw new ValidationError('Validation failed', { issues: parsed.error.flatten() });
+            }
+
+            const agent = await agentRepo.findByName('Email Draft Agent');
+            if (!agent) {
+                throw new NotFoundError('Agent', 'Email Draft Agent');
+            }
+
+            const token = (request.headers.authorization ?? '').replace('Bearer ', '');
+            const config: GovernanceClientConfig = {
+                platformUrl: `http://localhost:${env.PORT}`,
+                agentId: agent.id,
+                apiKey: token,
+            };
+
+            try {
+                const result = await runLocalEmailAgent(config, parsed.data.task, parsed.data.model);
+                return reply.status(201).send(result);
+            } catch (err) {
+                const message = err instanceof Error ? err.message : 'Unknown error';
+                if (message.includes('Ollama')) {
+                    throw new ExternalServiceError('Ollama', message);
                 }
                 throw err;
             }

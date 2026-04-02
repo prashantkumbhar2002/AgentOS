@@ -14,6 +14,7 @@ const EnvSchema = z.object({
   SLACK_SIGNING_SECRET: z.string().optional(),
   SLACK_CHANNEL_ID: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  OLLAMA_URL: z.string().default('http://localhost:11434'),
   SSE_SECRET: z.string().min(32, 'SSE_SECRET must be at least 32 characters').default('sse-default-dev-secret-change-in-prod-32chars!!'),
 });
 

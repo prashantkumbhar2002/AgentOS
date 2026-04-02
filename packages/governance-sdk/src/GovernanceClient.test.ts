@@ -35,7 +35,7 @@ describe('GovernanceClient', () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://localhost:3000/api/audit/log');
+    expect(url).toBe('http://localhost:3000/api/v1/audit/log');
     expect(options.method).toBe('POST');
     expect(options.headers).toEqual({
       'Content-Type': 'application/json',

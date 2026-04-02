@@ -24,7 +24,7 @@ export class GovernanceClient {
 
   async logEvent(payload: Record<string, unknown>): Promise<void> {
     try {
-      await fetch(`${this.platformUrl}/api/audit/log`, {
+      await fetch(`${this.platformUrl}/api/v1/audit/log`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -118,7 +118,7 @@ export class GovernanceClient {
     const maxWait = params.maxWaitMs ?? 30 * 60 * 1000;
 
     try {
-      const createRes = await fetch(`${this.platformUrl}/api/approvals`, {
+      const createRes = await fetch(`${this.platformUrl}/api/v1/approvals`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -151,7 +151,7 @@ export class GovernanceClient {
 
         try {
           const pollRes = await fetch(
-            `${this.platformUrl}/api/approvals/${ticketId}`,
+            `${this.platformUrl}/api/v1/approvals/${ticketId}`,
             {
               headers: { Authorization: `Bearer ${this.apiKey}` },
             },
