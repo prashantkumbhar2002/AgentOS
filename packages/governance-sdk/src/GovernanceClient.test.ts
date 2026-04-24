@@ -181,6 +181,66 @@ describe('GovernanceClient', () => {
         await client.shutdown();
     });
 
+    it('wrapLLMStream yields chunks to the caller and logs metadata once', async () => {
+        const client = createClient();
+
+        async function* source() {
+            yield 'hello';
+            yield ' ';
+            yield 'world';
+        }
+
+        const received: string[] = [];
+        for await (const chunk of client.wrapLLMStream(source, (chunks) => ({
+            provider: 'test',
+            model: 'mock-1',
+            inputTokens: 1,
+            outputTokens: chunks.length,
+            costUsd: 0.0001,
+        }))) {
+            received.push(chunk);
+        }
+
+        expect(received).toEqual(['hello', ' ', 'world']);
+
+        await client.shutdown();
+        const [, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+        const body = JSON.parse(options.body as string);
+        const llmEvents = body.events.filter((e: { event: string }) => e.event === 'llm_call');
+        expect(llmEvents).toHaveLength(1);
+        expect(llmEvents[0]).toMatchObject({
+            provider: 'test',
+            model: 'mock-1',
+            outputTokens: 3,
+            success: true,
+        });
+    });
+
+    it('wrapLLMStream surfaces stream errors and logs failure', async () => {
+        const client = createClient();
+
+        async function* source() {
+            yield 'a';
+            throw new Error('stream broke');
+        }
+
+        await expect(async () => {
+            for await (const _ of client.wrapLLMStream(source, () => ({
+                provider: 'test',
+                model: 'mock-1',
+            }))) {
+                void _;
+            }
+        }).rejects.toThrow('stream broke');
+
+        await client.shutdown();
+        const [, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+        const body = JSON.parse(options.body as string);
+        const llmEvents = body.events.filter((e: { event: string }) => e.event === 'llm_call');
+        expect(llmEvents).toHaveLength(1);
+        expect(llmEvents[0]).toMatchObject({ success: false, errorMsg: 'stream broke' });
+    });
+
     it('requestApproval returns AUTO_APPROVED when policy allows', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
             ok: true,
