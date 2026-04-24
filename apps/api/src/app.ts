@@ -134,7 +134,11 @@ export async function buildApp() {
 
         reply.raw.write(': connected\n\n');
 
-        const clientId = fastify.sse.addClient(reply);
+        const clientId = fastify.sse.addClient(reply, (event) => {
+            if (event.type !== 'approval.resolved') return false;
+            const payload = event.payload as { ticketId?: string } | null | undefined;
+            return payload?.ticketId === ticketId;
+        });
 
         const heartbeat = setInterval(() => {
             try {
