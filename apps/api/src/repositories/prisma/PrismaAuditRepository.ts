@@ -17,6 +17,8 @@ export class PrismaAuditRepository implements IAuditRepository {
             data: {
                 agentId: data.agentId,
                 traceId: data.traceId,
+                spanId: data.spanId ?? null,
+                parentSpanId: data.parentSpanId ?? null,
                 event: data.event,
                 model: data.model ?? null,
                 toolName: data.toolName ?? null,
@@ -39,6 +41,8 @@ export class PrismaAuditRepository implements IAuditRepository {
             data: data.map((d) => ({
                 agentId: d.agentId,
                 traceId: d.traceId,
+                spanId: d.spanId ?? null,
+                parentSpanId: d.parentSpanId ?? null,
                 event: d.event,
                 model: d.model ?? null,
                 toolName: d.toolName ?? null,
@@ -239,6 +243,8 @@ export class PrismaAuditRepository implements IAuditRepository {
             id: log.id,
             agentId: log.agentId,
             traceId: log.traceId,
+            spanId: log.spanId ?? null,
+            parentSpanId: log.parentSpanId ?? null,
             event: log.event,
             model: log.model,
             toolName: log.toolName,

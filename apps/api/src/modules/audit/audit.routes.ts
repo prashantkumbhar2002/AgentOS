@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import {
     AuditEventSchema,
+    AuditBatchSchema,
     AuditQuerySchema,
     TraceIdParamsSchema,
     AgentIdParamsSchema,
@@ -63,6 +64,65 @@ export default async function auditRoutes(
                 traceId: log.traceId,
                 costUsd: log.costUsd,
             });
+        },
+    );
+
+    fastify.post(
+        '/batch',
+        {
+            preHandler: [authenticate],
+            config: {
+                rateLimit: {
+                    max: 200,
+                    timeWindow: '1 minute',
+                    keyGenerator: (request: { body: unknown }) => {
+                        const body = request.body as Record<string, unknown> | undefined;
+                        const events = body?.events as Array<Record<string, unknown>> | undefined;
+                        return (events?.[0]?.agentId as string) ?? 'unknown';
+                    },
+                },
+            },
+        },
+        async (request, reply) => {
+            const parsed = AuditBatchSchema.safeParse(request.body);
+            if (!parsed.success) {
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
+            }
+
+            const agentIds = [...new Set(parsed.data.events.map((e) => e.agentId))];
+            for (const agentId of agentIds) {
+                const agentExists = await agentService.getAgentById(agentId);
+                if (!agentExists) {
+                    throw new NotFoundError('Agent', agentId);
+                }
+            }
+
+            let totalCostUsd = 0;
+            const logsToCreate = parsed.data.events.map((event) => {
+                const costUsd = calculateCost(
+                    event.model ?? '',
+                    event.inputTokens ?? 0,
+                    event.outputTokens ?? 0,
+                );
+                totalCostUsd += costUsd;
+                return { ...event, costUsd };
+            });
+
+            const count = await auditService.createBatch(logsToCreate);
+
+            for (const log of logsToCreate) {
+                fastify.sse.broadcast({
+                    type: 'audit.log',
+                    payload: {
+                        agentId: log.agentId,
+                        event: log.event,
+                        traceId: log.traceId,
+                        costUsd: log.costUsd,
+                    },
+                });
+            }
+
+            return reply.status(201).send({ count, totalCostUsd });
         },
     );
 

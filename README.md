@@ -12,10 +12,11 @@ Companies are deploying AI agents that autonomously send emails, query databases
 
 AgentOS sits between your AI agents and the actions they take. Every agent must register with the platform and route its actions through AgentOS. The platform then:
 
-1. **Logs every action** the agent performs — what model it called, what tool it used, how much it cost, whether it succeeded
-2. **Checks the action against policies** — should this agent be allowed to send external emails? Should a high-risk agent be able to delete records without approval?
-3. **Escalates risky actions to humans** — if a policy says "require approval", the action is paused and a human reviewer is notified via the dashboard and Slack
-4. **Tracks all costs and usage** — so teams can see which agents are expensive, which are failing, and where to optimize
+1. **Logs every action** the agent performs — what model it called, what tool it used, how much it cost, whether it succeeded — with hierarchical trace trees
+2. **Checks actions against policies before execution** — should this agent be allowed to send external emails? Should a high-risk agent be able to delete records without approval? Policies are evaluated *before* the tool runs, not after
+3. **Escalates risky actions to humans** — if a policy says "require approval", the action is paused and a human reviewer is notified via SSE push and Slack
+4. **Tracks all costs and usage** — with per-agent budget limits and real-time spend tracking
+5. **Works with any LLM provider** — Anthropic, OpenAI, Ollama, or any custom model via a provider-agnostic SDK
 
 Think of it as **an ops control plane for AI agents** — the same way you'd use Datadog for servers or a CI/CD pipeline for deployments, AgentOS gives you visibility and control over your AI agents.
 
@@ -72,18 +73,36 @@ Every AI agent in your organization is registered with:
 
 This gives you a single inventory of every AI agent, who owns it, what it can do, and how risky it is.
 
-### 2. Audit Trail
+### 2. Audit Trail (with Hierarchical Traces)
 
-Every action an agent takes is logged:
-- **LLM calls** — which model, input/output tokens, cost in USD, latency in ms, success/failure
+Every action an agent takes is logged non-blockingly via the `EventBuffer`:
+- **LLM calls** — which provider, model, input/output tokens, cost in USD, latency in ms, success/failure
 - **Tool calls** — which tool, inputs, outputs, latency, success/failure
 - **Approval events** — when approval was requested, who approved/denied, reasoning
 
-Events are grouped into **traces** (a single agent session). You can filter by agent, event type, date range, or search by trace ID. Admins can export logs as CSV.
+Events are grouped into **traces** (a single agent session) and organized into **hierarchical span trees** via `spanId` / `parentSpanId`. The TraceDrawer in the dashboard renders these as nested tree views — e.g., a parent "research-workflow" span containing child "llm-call" and "web-search" spans. You can filter by agent, event type, date range, or search by trace ID. Admins can export logs as CSV.
 
-### 3. Policy Engine
+### 3. GovernanceClient SDK (v2 — Provider-Agnostic)
 
-Policies are rules that govern what agents can and cannot do. Each policy contains rules that match on two things:
+The SDK is how AI agents integrate with AgentOS. It's **provider-agnostic** — it works with Anthropic, OpenAI, Ollama, or any LLM accessible via HTTP.
+
+Key capabilities:
+- **`wrapLLMCall(fn, metadata)`** — wrap any async LLM call for automatic logging (tokens, cost, latency, success/failure)
+- **`wrapLLMStream(fn, metadata)`** — same for streaming responses
+- **`callTool(name, inputs, fn, options)`** — checks policy *before* executing, requests approval if needed, then runs the tool
+- **`withSpan(name, fn)`** — creates hierarchical trace spans for complex workflows
+- **Cost budgets** — set a `maxCostUsd` and the SDK throws `BudgetExceededError` when exceeded
+- **Resilience** — `CircuitBreaker` retries failed platform calls and can fail-open (agent continues) or fail-closed (agent stops)
+- **Non-blocking logging** — `EventBuffer` batches events and flushes asynchronously
+
+Optional framework adapters provide zero-config integration:
+- `@agentos/governance-sdk/adapters/anthropic` — wraps Anthropic's `messages.create`
+- `@agentos/governance-sdk/adapters/openai` — wraps OpenAI's `chat.completions.create`
+- `@agentos/governance-sdk/adapters/langchain` — provides a LangChain callback handler
+
+### 4. Policy Engine (with Pre-Execution Gating)
+
+Policies are rules that govern what agents can and cannot do. In SDK v2, policies are checked **before** a tool executes — not just at approval time. Each policy contains rules that match on two things:
 - **Action type** — what the agent is trying to do (e.g., `send_email`, `delete_record`, or `*` for any action)
 - **Risk tier** — the agent's risk classification
 
@@ -96,7 +115,7 @@ Policies are evaluated with strict priority: DENY always wins over REQUIRE_APPRO
 
 Policies can be **global** (apply to all agents) or **assigned to specific agents**.
 
-### 4. Approval Workflows
+### 5. Approval Workflows
 
 When a policy requires approval, AgentOS creates a **ticket** containing:
 - The agent's name and risk level
@@ -109,7 +128,7 @@ The ticket appears in the **Approval Queue** in the dashboard. Reviewers with th
 
 Tickets expire after 30 minutes if nobody responds. A background worker handles expiration automatically.
 
-### 5. Analytics & Cost Tracking
+### 6. Analytics & Cost Tracking
 
 The analytics dashboard answers questions like:
 - **How much are we spending?** — cost summary for today, last 7 days, last 30 days, with week-over-week trend
@@ -119,7 +138,7 @@ The analytics dashboard answers questions like:
 - **How are approvals going?** — pie chart of auto-approved / approved / denied / expired
 - **Which models are used?** — call count, token usage, and cost per model
 
-### 6. Real-Time Updates (SSE & Live Activity)
+### 7. Real-Time Updates (SSE & Live Activity)
 
 The dashboard maintains a **persistent connection** to the API server using Server-Sent Events (SSE). This is the green/red "Connected" / "Disconnected" indicator you see in the top bar.
 
@@ -140,7 +159,7 @@ The dashboard maintains a **persistent connection** to the API server using Serv
 
 **If the connection drops** (network issue, server restart), the indicator turns red and the dashboard automatically retries with exponential backoff (2s → 4s → 8s → ... up to 30s). When it reconnects, it goes green again and live updates resume.
 
-### 7. Agent Health Score
+### 8. Agent Health Score
 
 Every agent has a **health score from 0 to 100** that gives you an at-a-glance view of how well it's performing. The score is a weighted composite of three factors:
 
@@ -162,13 +181,17 @@ Every agent has a **health score from 0 to 100** that gives you an at-a-glance v
 
 **Why it matters**: A dropping health score is an early warning signal. High error rates might mean the agent's prompt or tool configuration needs fixing. High denial rates suggest the agent is repeatedly attempting actions outside its intended scope — it may need tighter policies or retraining. High latency could point to upstream API throttling or model overload.
 
-### 8. Showcase Agents
+### 9. Showcase Agents
 
-To demonstrate the platform, AgentOS includes two working agents powered by Claude:
+To demonstrate the platform, AgentOS includes four working agents using SDK v2:
 
-**Email Draft Agent** — receives a task, drafts a professional email using Claude, then requests human approval before "sending" it. Demonstrates the full governance loop: LLM call → policy check → approval → action.
+**Email Draft Agent** — uses the Anthropic adapter with `withSpan` for hierarchical tracing, policy-gated `callTool` for the send action, and budget/resilience configuration.
 
-**Research Agent** — receives a topic, uses Claude to plan search queries, searches the web, fetches results, synthesizes a report, then requests approval to save it. Demonstrates multi-step agent workflows with multiple tool calls.
+**Research Agent** — demonstrates nested spans for complex multi-step workflows, Anthropic adapter for LLM calls, and policy-gated tool calls for web searches and report saving.
+
+**Local Email Agent** — uses the generic `wrapLLMCall` with Ollama (a local LLM), proving the SDK works with any HTTP-based model provider without vendor SDKs.
+
+**Multi-Provider Agent** — combines the Anthropic adapter and raw `wrapLLMCall` for different providers within a single governed trace, demonstrating multi-provider workflows.
 
 **Mock Data Seeder** — generates realistic demo data (3 agents, 50 audit log entries across 7 days, 5 approval tickets) so the dashboard looks populated for demos and development.
 
@@ -226,9 +249,10 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 └────────────────────────┼─────────────────────────┘
                          │
 ┌────────────────────────┼─────────────────────────┐
-│       GovernanceClient SDK (packages/)             │
-│  Used by AI agents to log, request approval,      │
-│  call tools, and interact with the platform        │
+│     GovernanceClient SDK v2 (packages/)            │
+│  Provider-agnostic: wrapLLMCall, callTool,        │
+│  withSpan, policy gate, budget, resilience         │
+│  Adapters: Anthropic, OpenAI, LangChain           │
 └───────────────────────────────────────────────────┘
 ```
 
@@ -249,7 +273,7 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 | Validation | Zod (shared schemas in `packages/types`) |
 | Auth | JWT + bcrypt, RBAC |
 | Realtime | Server-Sent Events (SSE) |
-| AI | Anthropic Claude SDK |
+| AI | Provider-agnostic (Anthropic, OpenAI, Ollama — all optional) |
 | Messaging | Slack Web API |
 | Testing | Vitest + Supertest |
 
@@ -275,7 +299,7 @@ AgentOS/
 │           └── store/          # Client state (auth, theme)
 ├── packages/
 │   ├── types/                  # Shared validation schemas and TypeScript types
-│   └── governance-sdk/         # SDK for agents to interact with the platform
+│   └── governance-sdk/         # SDK v2 — provider-agnostic + adapters
 ├── specs/                      # Feature specifications and task breakdowns
 └── docs/
     ├── SetUp.md                # Setup guide + API curl reference
@@ -321,6 +345,7 @@ Open http://localhost:5173 and sign in as `admin@agentos.dev` / `admin123`.
 | FIX-03 | Security Headers + Request ID + SSE Token Fix | Done |
 | FIX-04 | Fix N+1 Query Performance | Done |
 | FIX-05 | API Versioning (`/api/v1/` prefix) | Done |
+| SDK v2 | Provider-Agnostic SDK, EventBuffer, SpanManager, Policy Gate, Cost Budgets, CircuitBreaker, Streaming, Framework Adapters, Showcase Rewrites | Done |
 
 ---
 

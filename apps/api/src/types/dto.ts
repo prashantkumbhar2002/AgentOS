@@ -62,6 +62,8 @@ export interface AuditLogEntry {
     id: string;
     agentId: string;
     traceId: string;
+    spanId: string | null;
+    parentSpanId: string | null;
     event: string;
     model: string | null;
     toolName: string | null;
@@ -217,6 +219,8 @@ export interface ModelMetricRow {
 export interface CreateAuditLogInput {
     agentId: string;
     traceId: string;
+    spanId?: string | null;
+    parentSpanId?: string | null;
     event: string;
     model?: string | null;
     toolName?: string | null;

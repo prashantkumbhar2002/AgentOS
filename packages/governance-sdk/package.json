@@ -1,18 +1,30 @@
 {
   "name": "@agentos/governance-sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapters/anthropic": "./src/adapters/anthropic.ts",
+    "./adapters/openai": "./src/adapters/openai.ts",
+    "./adapters/langchain": "./src/adapters/langchain.ts"
+  },
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0"
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.39.0",
+    "openai": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": { "optional": true },
+    "openai": { "optional": true }
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "typescript": "^5",
     "vitest": "^3"
   }

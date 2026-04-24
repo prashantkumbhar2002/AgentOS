@@ -6,6 +6,7 @@ export {
   PolicyAssignSchema,
   PolicyUnassignParamsSchema,
   PolicyEvaluationRequestSchema,
+  PolicyCheckRequestSchema,
 } from '@agentos/types';
 
 export type {
@@ -16,4 +17,5 @@ export type {
   PolicyAssignInput,
   PolicyUnassignParams,
   PolicyEvaluationRequest,
+  PolicyCheckRequest,
 } from '@agentos/types';

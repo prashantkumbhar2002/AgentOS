@@ -28,6 +28,8 @@ export class AuditService {
         const log = await this.auditRepo.create({
             agentId: data.agentId,
             traceId: data.traceId,
+            spanId: data.spanId,
+            parentSpanId: data.parentSpanId,
             event: data.event,
             model: data.model,
             toolName: data.toolName,
@@ -45,6 +47,36 @@ export class AuditService {
         this.agentRepo.updateLastActiveAt(data.agentId);
 
         return log;
+    }
+
+    async createBatch(events: Array<AuditEventInput & { costUsd: number }>): Promise<number> {
+        const inputs = events.map((e) => ({
+            agentId: e.agentId,
+            traceId: e.traceId,
+            spanId: e.spanId,
+            parentSpanId: e.parentSpanId,
+            event: e.event,
+            model: e.model,
+            toolName: e.toolName,
+            inputs: e.inputs,
+            outputs: e.outputs,
+            inputTokens: e.inputTokens,
+            outputTokens: e.outputTokens,
+            costUsd: e.costUsd,
+            latencyMs: e.latencyMs,
+            success: e.success,
+            errorMsg: e.errorMsg,
+            metadata: e.metadata,
+        }));
+
+        const count = await this.auditRepo.createMany(inputs);
+
+        const agentIds = [...new Set(events.map((e) => e.agentId))];
+        for (const agentId of agentIds) {
+            this.agentRepo.updateLastActiveAt(agentId);
+        }
+
+        return count;
     }
 
     async queryLogs(query: AuditQuery): Promise<AuditQueryResult> {

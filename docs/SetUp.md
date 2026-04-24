@@ -1,6 +1,6 @@
 # AgentOS — AI Agent Governance & Management Platform
 
-Centralized control over autonomous AI agents — register, audit, govern, and visualize.
+Centralized control over autonomous AI agents — register, audit, govern, and visualize. Provider-agnostic SDK v2 with support for any LLM.
 
 ## Prerequisites
 
@@ -181,6 +181,42 @@ curl -s "http://localhost:3000/api/v1/audit/logs?export=csv" \
   -o audit-export.csv
 ```
 
+### Audit Batch (SDK v2)
+
+```bash
+# Ingest a batch of audit events (used by SDK EventBuffer)
+curl -s -X POST http://localhost:3000/api/v1/audit/batch \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "events": [
+      {
+        "agentId": "<AGENT_ID>",
+        "traceId": "<TRACE_ID>",
+        "spanId": "span-001",
+        "parentSpanId": null,
+        "event": "llm_call",
+        "model": "claude-sonnet-4-20250514",
+        "costUsd": 0.003,
+        "inputTokens": 150,
+        "outputTokens": 200,
+        "latencyMs": 1200,
+        "success": true
+      },
+      {
+        "agentId": "<AGENT_ID>",
+        "traceId": "<TRACE_ID>",
+        "spanId": "span-002",
+        "parentSpanId": "span-001",
+        "event": "tool_call",
+        "toolName": "send_email",
+        "latencyMs": 50,
+        "success": true
+      }
+    ]
+  }'
+```
+
 ### Policies
 
 ```bash
@@ -204,11 +240,18 @@ curl -s -X POST http://localhost:3000/api/v1/policies \
     }]
   }'
 
-# Evaluate a policy (check what would happen)
+# Evaluate a policy (full evaluation with details)
 curl -s -X POST http://localhost:3000/api/v1/policies/evaluate \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"agentId": "<AGENT_ID>", "actionType": "send_email", "riskTier": "HIGH"}'
+
+# Lightweight policy check (SDK pre-execution gate)
+curl -s -X POST http://localhost:3000/api/v1/policies/check \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId": "<AGENT_ID>", "actionType": "send_email"}'
+# Returns: { "effect": "ALLOW" | "DENY" | "REQUIRE_APPROVAL" }
 ```
 
 ### Analytics
@@ -253,6 +296,12 @@ curl -s -X POST http://localhost:3000/api/v1/showcase/research-agent/run \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"topic": "Latest developments in AI agent safety"}'
+
+# Run Multi-Provider Agent (demonstrates multiple LLM providers in one trace)
+curl -s -X POST http://localhost:3000/api/v1/showcase/multi-provider/run \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Compare approaches to AI safety"}'
 ```
 
 ### Health Check

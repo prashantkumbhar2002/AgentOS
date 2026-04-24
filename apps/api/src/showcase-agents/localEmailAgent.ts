@@ -65,78 +65,69 @@ export async function runLocalEmailAgent(
     body: string;
     model: string;
 }> {
-    const gov = new GovernanceClient(config);
-
-    const start = Date.now();
-    let ollamaRes: OllamaChatResponse;
+    const gov = new GovernanceClient({
+        ...config,
+        resilience: { onPlatformUnavailable: 'fail-closed', retryAttempts: 2 },
+    });
 
     try {
-        ollamaRes = await ollamaChat(
-            model,
-            'You are an email writing assistant. Draft professional emails. Format your response as:\nSubject: <subject line>\n\n<email body>',
-            `Draft an email for this task: ${task}`,
+        // Use wrapLLMCall with Ollama — demonstrates provider-agnostic approach
+        const ollamaRes = await gov.withSpan('draft_email_local', () =>
+            gov.wrapLLMCall(
+                () => ollamaChat(
+                    model,
+                    'You are an email writing assistant. Draft professional emails. Format your response as:\nSubject: <subject line>\n\n<email body>',
+                    `Draft an email for this task: ${task}`,
+                ),
+                (result) => ({
+                    provider: 'ollama',
+                    model: result.model,
+                    inputTokens: result.prompt_eval_count ?? 0,
+                    outputTokens: result.eval_count ?? 0,
+                    costUsd: 0,
+                }),
+            ),
         );
-    } catch (err) {
-        const latencyMs = Date.now() - start;
-        await gov.logEvent({
-            event: 'llm_call',
-            model,
-            latencyMs,
-            success: false,
-            errorMsg: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
+
+        const raw = ollamaRes.message.content;
+        const { subject, body } = parseSubjectAndBody(raw);
+
+        let status = 'APPROVED';
+        let ticketId: string | undefined;
+
+        try {
+            await gov.callTool(
+                'send_email',
+                { subject, body },
+                async () => {
+                    console.log('[LocalEmailAgent] Email sent (simulated):', subject);
+                    return { sent: true };
+                },
+                {
+                    riskScore: 0.82,
+                    approvalParams: {
+                        reasoning: 'Local agent wants to send email to external recipient',
+                        payload: { subject, body, recipientType: 'external' },
+                    },
+                },
+            );
+        } catch (err) {
+            if (err && typeof err === 'object' && 'name' in err && err.name === 'PolicyDeniedError') {
+                status = 'DENIED';
+            } else {
+                throw err;
+            }
+        }
+
+        return {
+            traceId: gov.traceId,
+            status,
+            subject,
+            body,
+            model: ollamaRes.model,
+            ...(ticketId ? { ticketId } : {}),
+        };
+    } finally {
+        await gov.shutdown();
     }
-
-    const latencyMs = Date.now() - start;
-    const inputTokens = ollamaRes.prompt_eval_count ?? 0;
-    const outputTokens = ollamaRes.eval_count ?? 0;
-
-    await gov.logEvent({
-        event: 'llm_call',
-        model: ollamaRes.model,
-        inputTokens,
-        outputTokens,
-        costUsd: 0,
-        latencyMs,
-        success: true,
-    });
-
-    const raw = ollamaRes.message.content;
-    const { subject, body } = parseSubjectAndBody(raw);
-
-    const { decision, ticketId } = await gov.requestApproval({
-        actionType: 'send_email',
-        payload: { subject, body, recipientType: 'external' },
-        reasoning: 'Local agent wants to send email to external recipient',
-        riskScore: 0.82,
-        pollIntervalMs: 2000,
-        maxWaitMs: 30000,
-    });
-
-    if (decision === 'APPROVED' || decision === 'AUTO_APPROVED') {
-        await gov.callTool(
-            'send_email',
-            { subject, body },
-            async () => {
-                console.log('[LocalEmailAgent] Email sent (simulated):', subject);
-                return { sent: true };
-            },
-        );
-    } else if (decision === 'DENIED') {
-        await gov.logEvent({
-            event: 'action_blocked',
-            actionType: 'send_email',
-            reason: 'Approval denied',
-        });
-    }
-
-    return {
-        traceId: gov.traceId,
-        status: decision,
-        subject,
-        body,
-        model: ollamaRes.model,
-        ...(ticketId ? { ticketId } : {}),
-    };
 }

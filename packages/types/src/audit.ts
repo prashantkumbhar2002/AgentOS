@@ -13,6 +13,8 @@ export type AuditEventType = z.infer<typeof AuditEventTypeSchema>;
 export const AuditEventSchema = z.object({
   agentId: z.string().uuid(),
   traceId: z.string().uuid(),
+  spanId: z.string().uuid().optional(),
+  parentSpanId: z.string().uuid().optional(),
   event: AuditEventTypeSchema,
   model: z.string().optional(),
   toolName: z.string().optional(),
@@ -26,6 +28,11 @@ export const AuditEventSchema = z.object({
   metadata: z.unknown().optional(),
 });
 export type AuditEventInput = z.infer<typeof AuditEventSchema>;
+
+export const AuditBatchSchema = z.object({
+  events: z.array(AuditEventSchema).min(1).max(100),
+});
+export type AuditBatchInput = z.infer<typeof AuditBatchSchema>;
 
 export const AuditQuerySchema = z.object({
   agentId: z.string().uuid().optional(),
@@ -44,6 +51,8 @@ export const AuditLogSchema = z.object({
   id: z.string().uuid(),
   agentId: z.string().uuid(),
   traceId: z.string().uuid(),
+  spanId: z.string().nullable(),
+  parentSpanId: z.string().nullable(),
   event: z.string(),
   model: z.string().nullable(),
   toolName: z.string().nullable(),

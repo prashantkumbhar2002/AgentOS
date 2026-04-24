@@ -7,8 +7,10 @@ import {
     PolicyAssignSchema,
     PolicyUnassignParamsSchema,
     PolicyEvaluationRequestSchema,
+    PolicyCheckRequestSchema,
 } from './policies.schema.js';
 import { authenticate, requireRole } from '../../plugins/auth.js';
+import { getRiskLabel } from '../../utils/risk-label.js';
 import { NotFoundError, ValidationError, ConflictError } from '../../errors/index.js';
 
 export default async function policyRoutes(
@@ -33,6 +35,38 @@ export default async function policyRoutes(
                     parsed.data.context ?? {},
                 );
                 return reply.status(200).send(result);
+            } catch (err) {
+                const message = err instanceof Error ? err.message : 'Unknown error';
+                if (message === 'Agent not found') {
+                    throw new NotFoundError('Agent', parsed.data.agentId);
+                }
+                throw err;
+            }
+        },
+    );
+
+    fastify.post(
+        '/check',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            const parsed = PolicyCheckRequestSchema.safeParse(request.body);
+            if (!parsed.success) {
+                throw new ValidationError('Validation failed', { issues: parsed.error.issues });
+            }
+
+            const { label: riskTier } = getRiskLabel(parsed.data.riskScore);
+
+            try {
+                const result = await policyEvaluator.evaluate(
+                    parsed.data.agentId,
+                    parsed.data.actionType,
+                    riskTier,
+                    parsed.data.context ?? {},
+                );
+                return reply.status(200).send({
+                    effect: result.effect,
+                    reason: result.reason,
+                });
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Unknown error';
                 if (message === 'Agent not found') {

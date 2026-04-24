@@ -17,6 +17,8 @@ export class MockAuditRepository implements IAuditRepository {
             id: randomUUID(),
             agentId: data.agentId,
             traceId: data.traceId,
+            spanId: data.spanId ?? null,
+            parentSpanId: data.parentSpanId ?? null,
             event: data.event,
             model: data.model ?? null,
             toolName: data.toolName ?? null,

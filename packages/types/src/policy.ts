@@ -60,6 +60,14 @@ export const PolicyEvaluationRequestSchema = z.object({
 });
 export type PolicyEvaluationRequest = z.infer<typeof PolicyEvaluationRequestSchema>;
 
+export const PolicyCheckRequestSchema = z.object({
+  agentId: z.string().uuid(),
+  actionType: z.string().min(1),
+  riskScore: z.number().min(0).max(1),
+  context: z.record(z.unknown()).optional(),
+});
+export type PolicyCheckRequest = z.infer<typeof PolicyCheckRequestSchema>;
+
 export const PolicyEvaluationResultSchema = z.object({
   effect: PolicyEffectSchema,
   matchedRule: z.unknown().optional(),

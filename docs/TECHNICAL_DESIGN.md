@@ -1,8 +1,8 @@
 # AgentOS — Technical Design Document
 
 **Project**: AgentOS — AI Agent Governance & Management Platform
-**Version**: 4.0.0
-**Date**: 2026-03-21 (updated)
+**Version**: 5.0.0
+**Date**: 2026-04-05 (updated)
 **Branch**: `feat/enhancements/v1`
 
 ---
@@ -22,7 +22,7 @@
 11. [Security Headers, Request ID & SSE Token (FIX-03)](#11-security-headers-request-id--sse-token-fix-03)
 12. [N+1 Query Optimization (FIX-04)](#12-n1-query-optimization-fix-04)
 13. [API Versioning (FIX-05)](#13-api-versioning-fix-05)
-14. [GovernanceClient SDK](#14-governanceclient-sdk)
+14. [GovernanceClient SDK v2](#14-governanceclient-sdk-v2)
 15. [Shared Types Package](#15-shared-types-package)
 16. [Testing Strategy](#16-testing-strategy)
 17. [Security & RBAC](#17-security--rbac)
@@ -91,12 +91,21 @@ The platform consists of a Fastify REST API backend and a React SPA frontend, de
 │  └─────────┘  └──────────┘  └──────────┘  └────────────────┘         │
 └──────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────┐     ┌───────────────────────────────┐
-│  GovernanceClient SDK    │────▶│  Showcase Agents              │
-│  (packages/governance-   │     │  - Email Draft Agent (Claude) │
-│   sdk)                   │     │  - Research Agent (Claude)    │
-│                          │     │  - Mock Data Seeder           │
-└──────────────────────────┘     └───────────────────────────────┘
+┌───────────────────────────────────┐     ┌──────────────────────────────────────┐
+│  GovernanceClient SDK v2          │────▶│  Showcase Agents                      │
+│  (packages/governance-sdk)        │     │  - Email Draft Agent (Anthropic)      │
+│                                   │     │  - Research Agent (Anthropic)         │
+│  Core: wrapLLMCall, wrapLLMStream │     │  - Local Email Agent (Ollama)         │
+│  EventBuffer (batch flush)        │     │  - Multi-Provider Agent (any LLM)     │
+│  SpanManager (trace tree)         │     │  - Mock Data Seeder                   │
+│  PolicyGate (pre-check)           │     └──────────────────────────────────────┘
+│  CostBudget (spend limits)        │
+│  CircuitBreaker (resilience)      │     ┌──────────────────────────────────────┐
+│  SSE Approvals (push + polling)   │     │  Framework Adapters (optional)        │
+│                                   │     │  - Anthropic adapter                  │
+│  Adapters:                        │     │  - OpenAI adapter                     │
+│  anthropic, openai, langchain     │     │  - LangChain callback handler         │
+└───────────────────────────────────┘     └──────────────────────────────────────┘
 ```
 
 ### Request Flow
@@ -118,16 +127,21 @@ The platform consists of a Fastify REST API backend and a React SPA frontend, de
 ### Governance Flow (for AI Agents)
 
 ```
-Agent Action → GovernanceClient.requestApproval()
-  → POST /api/v1/approvals
-    → Policy Evaluator checks rules
-      → ALLOW     → auto-approve, return immediately
-      → DENY      → reject with PolicyBlockedError (403)
-      → REQUIRE   → create ApprovalTicket
+Agent Action → GovernanceClient.callTool(name, inputs, fn, { riskScore })
+  → POST /api/v1/policies/check (pre-execution policy gate)
+    → ALLOW     → execute fn(), log tool_call event via EventBuffer
+    → DENY      → throw PolicyDeniedError (tool never executes)
+    → REQUIRE   → requestApproval()
+      → POST /api/v1/approvals → create ApprovalTicket
         → Slack notification (via BullMQ)
         → SSE broadcast to connected approvers
-        → Agent polls GET /api/v1/approvals/:id until resolved
+        → SDK tries SSE push (GET /api/v1/events/agent-stream)
+        → Falls back to polling GET /api/v1/approvals/:id
+      → APPROVED → execute fn(), log tool_call event
+      → DENIED   → throw PolicyDeniedError
 ```
+
+All audit events are buffered in-memory and flushed in batches to `POST /api/v1/audit/batch` (non-blocking). Events include `spanId` and `parentSpanId` for hierarchical trace trees.
 
 ---
 
@@ -146,7 +160,7 @@ Agent Action → GovernanceClient.requestApproval()
 | **Validation** | Zod | latest |
 | **Auth** | JWT (@fastify/jwt) + bcrypt + jsonwebtoken (SSE tokens) | — |
 | **Security** | @fastify/helmet | latest |
-| **AI SDK** | @anthropic-ai/sdk | ^0.39.0 |
+| **AI SDK** | @anthropic-ai/sdk (optional), openai (optional) | ^0.39.0 / ^4.0.0 |
 | **Messaging** | @slack/web-api | latest |
 | **Testing** | Vitest + Supertest | v3 / v7 |
 | **Realtime** | Server-Sent Events (SSE) | — |
@@ -222,9 +236,11 @@ AgentOS/
 │           │   ├── analytics/        # Cost + usage analytics (class-based service)
 │           │   └── showcase/         # Demo agent trigger routes
 │           ├── showcase-agents/
-│           │   ├── emailDraftAgent.ts   # Claude-powered email agent
-│           │   ├── researchAgent.ts     # Claude-powered research agent
-│           │   └── mockAgent.ts         # Mock data generator
+│           │   ├── emailDraftAgent.ts      # Anthropic adapter + policy-gated tools
+│           │   ├── researchAgent.ts        # Nested spans + Anthropic adapter
+│           │   ├── localEmailAgent.ts      # Ollama via generic wrapLLMCall
+│           │   ├── multiProviderAgent.ts   # Multi-provider (Anthropic + any LLM)
+│           │   └── mockAgent.ts            # Mock data generator
 │           ├── utils/
 │           │   ├── risk-label.ts     # Risk score → tier label
 │           │   ├── health-score.ts   # Agent health score calculator
@@ -262,9 +278,17 @@ AgentOS/
 │   │       ├── policy.ts
 │   │       ├── analytics.ts
 │   │       └── index.ts             # Re-exports everything
-│   └── governance-sdk/              # Agent-side SDK
+│   └── governance-sdk/              # Agent-side SDK (v2 — provider-agnostic)
 │       └── src/
-│           ├── GovernanceClient.ts
+│           ├── GovernanceClient.ts  # Core: wrapLLMCall, wrapLLMStream, callTool, withSpan
+│           ├── EventBuffer.ts       # Non-blocking batch event flushing
+│           ├── SpanManager.ts       # Hierarchical trace span management
+│           ├── CircuitBreaker.ts    # Platform resilience (retry + circuit-break)
+│           ├── adapters/
+│           │   ├── anthropic.ts     # Automatic governance for Anthropic SDK
+│           │   ├── openai.ts        # Automatic governance for OpenAI SDK
+│           │   └── langchain.ts     # LangChain callback handler for auto-logging
+│           ├── GovernanceClient.test.ts
 │           └── index.ts
 ├── specs/                           # Feature specifications
 │   ├── 005-approval-workflows/
@@ -342,6 +366,7 @@ User ──────────────────┐
 | createdAt | DateTime | Auto-set |
 | updatedAt | DateTime | Auto-updated |
 | lastActiveAt | DateTime? | Last activity timestamp |
+| budgetUsd | Float? | Cost budget limit in USD *(v2)* |
 
 #### AgentTool
 | Field | Type | Notes |
@@ -357,6 +382,8 @@ User ──────────────────┐
 | id | String (UUID) | Primary key |
 | agentId | String | FK → Agent |
 | traceId | String | Groups related events |
+| spanId | String? | Unique span identifier *(v2)* |
+| parentSpanId | String? | Parent span for hierarchical traces *(v2)* |
 | event | String | llm_call, tool_call, approval_requested, etc. |
 | model | String? | LLM model used |
 | toolName | String? | Tool invoked |
@@ -371,7 +398,7 @@ User ──────────────────┐
 | metadata | Json? | Arbitrary metadata |
 | createdAt | DateTime | Auto-set |
 
-**Indexes**: `agentId`, `traceId`, `createdAt`, `event`
+**Indexes**: `agentId`, `traceId`, `createdAt`, `event`, `spanId` *(v2)*
 
 #### ApprovalTicket
 | Field | Type | Notes |
@@ -446,6 +473,7 @@ All versioned endpoints require `Authorization: Bearer <JWT>`. Business endpoint
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/v1/audit/log` | Authenticated | Ingest an audit event |
+| POST | `/api/v1/audit/batch` | Authenticated | Ingest a batch of audit events *(v2)* |
 | GET | `/api/v1/audit/logs` | Authenticated | Query logs (JSON or CSV export) |
 | GET | `/api/v1/audit/traces/:traceId` | Authenticated | Get all events for a trace |
 | GET | `/api/v1/audit/stats/:id` | Authenticated | Per-agent statistics |
@@ -471,6 +499,7 @@ All versioned endpoints require `Authorization: Bearer <JWT>`. Business endpoint
 | POST | `/api/v1/policies/:id/assign` | Admin | Assign policy to an agent |
 | DELETE | `/api/v1/policies/:id/assign/:agentId` | Admin | Unassign policy from agent |
 | POST | `/api/v1/policies/evaluate` | Authenticated | Evaluate policies for an action |
+| POST | `/api/v1/policies/check` | Authenticated | Lightweight policy check (SDK pre-execution gate) *(v2)* |
 
 ### Analytics (`/api/v1/analytics`)
 
@@ -488,6 +517,7 @@ All versioned endpoints require `Authorization: Bearer <JWT>`. Business endpoint
 |--------|------|------|-------------|
 | POST | `/api/v1/showcase/email-agent/run` | Authenticated | Run email draft agent (requires ANTHROPIC_API_KEY) |
 | POST | `/api/v1/showcase/research-agent/run` | Authenticated | Run research agent (requires ANTHROPIC_API_KEY) |
+| POST | `/api/v1/showcase/multi-provider/run` | Authenticated | Run multi-provider agent *(v2)* |
 | POST | `/api/v1/showcase/mock/seed` | Admin | Seed mock agents, logs, and approvals |
 
 ### System — Unversioned
@@ -497,6 +527,7 @@ All versioned endpoints require `Authorization: Bearer <JWT>`. Business endpoint
 | GET | `/api/health` | None | Health check |
 | POST | `/api/v1/events/token` | Bearer JWT | Get short-lived SSE token (30s expiry) |
 | GET | `/api/v1/events/stream?token=<sseToken>` | SSE token | SSE stream for real-time events |
+| GET | `/api/v1/events/agent-stream?token=<sseToken>&ticketId=<id>` | SSE token | Agent-scoped SSE for approval push notifications *(v2)* |
 | POST | `/slack/interactions` | Slack signature | Slack interactive approve/deny |
 
 ### Backward Compatibility Redirects
@@ -513,7 +544,7 @@ All old unversioned business paths return **301 Permanent Redirect** to their `/
 | `/api/showcase/*` | `/api/v1/showcase/*` |
 | `/api/events/*` | `/api/v1/events/*` |
 
-**Total: 31 endpoints + 7 redirect prefixes**
+**Total: 35 endpoints + 7 redirect prefixes**
 
 ---
 
@@ -635,13 +666,27 @@ Uses Prisma `groupBy` and `aggregate` — no raw SQL, no new persistence models.
 | **Functional Requirements** | 18 |
 | **Success Criteria** | 7 |
 
-Demonstrates the full governance loop:
+Demonstrates the full governance loop. **All showcase agents were rewritten for SDK v2.**
 
-**Email Draft Agent** (5-step flow):
-1. Receive task → 2. LLM drafts email (Claude) → 3. Extract subject/body → 4. Request approval (riskScore 0.82) → 5. If approved, simulate send; if denied, log blocked
+**Email Draft Agent** *(rewritten — uses Anthropic adapter + policy-gated tools)*:
+1. `withSpan("email-draft")` wraps the entire workflow
+2. `createAnthropicAdapter` wraps LLM call with automatic governance logging
+3. `callTool("send_email", ..., { riskScore: 0.82 })` pre-checks policy, requests approval if needed
+4. Budget and resilience configured
 
-**Research Agent** (8-step flow):
-1. Receive topic → 2. LLM plans 2 search queries → 3-4. Execute web searches (Anthropic web_search tool) → 5. Fetch top result → 6. LLM synthesizes report → 7. Request approval to save (riskScore 0.35) → 8. If approved, simulate save
+**Research Agent** *(rewritten — nested spans + Anthropic adapter)*:
+1. Outer `withSpan("research-workflow")` + nested spans for each step
+2. `createAnthropicAdapter` for all LLM calls
+3. Policy-gated `callTool` for web searches and report saving
+4. Full hierarchical trace tree in TraceDrawer
+
+**Local Email Agent** *(new — Ollama via generic wrapLLMCall)*:
+- Demonstrates SDK v2 with a local LLM (Ollama) using `wrapLLMCall`
+- No vendor SDK required — just an HTTP fetch call wrapped in governance
+
+**Multi-Provider Agent** *(new — Anthropic + any LLM in one trace)*:
+- Uses both `createAnthropicAdapter` and raw `wrapLLMCall` in the same trace
+- Shows how different providers coexist under a single governance context
 
 **Mock Data Seeder**:
 - Creates 3 mock agents (CRM/Analytics/Compliance)
@@ -649,7 +694,7 @@ Demonstrates the full governance loop:
 - Creates 5 approval tickets (2 approved, 1 denied, 2 pending)
 - Idempotent — safe to run multiple times
 
-**Key implementation files**: `emailDraftAgent.ts`, `researchAgent.ts`, `mockAgent.ts`, `showcase.routes.ts`
+**Key implementation files**: `emailDraftAgent.ts`, `researchAgent.ts`, `localEmailAgent.ts`, `multiProviderAgent.ts`, `mockAgent.ts`, `showcase.routes.ts`
 
 ### EPIC 8 — Frontend — React Dashboard
 
@@ -1046,36 +1091,204 @@ Auth paths (`/api/auth/*`) remain unchanged in the frontend.
 
 ---
 
-## 14. GovernanceClient SDK
+## 14. GovernanceClient SDK v2
 
-The SDK (`packages/governance-sdk`) is the interface between AI agents and the AgentOS platform. Every agent action flows through this client.
+The SDK (`packages/governance-sdk`) is the interface between AI agents and the AgentOS platform. **v2 is a breaking rewrite** that removes Anthropic vendor lock-in and introduces non-blocking logging, hierarchical traces, pre-execution policy gating, cost budgets, resilience patterns, and streaming support.
 
-> **Note**: The GovernanceClient SDK is not affected by the FIX-01 refactor — it communicates with the API via HTTP, independent of internal architecture.
+### 14.1 Design Goals (v2)
 
-### Configuration
+| Goal | Solution |
+|------|----------|
+| Provider-agnostic | `wrapLLMCall` / `wrapLLMStream` accept any async function |
+| Non-blocking logging | `EventBuffer` queues events and batch-flushes to `/api/v1/audit/batch` |
+| Hierarchical traces | `SpanManager` assigns `spanId` / `parentSpanId` via `withSpan()` |
+| Pre-execution policy gating | `callTool` calls `POST /api/v1/policies/check` before executing |
+| Push-based approvals | SSE via `/api/v1/events/agent-stream` with polling fallback |
+| Cost budgets | `BudgetConfig` tracks cumulative spend, throws/warns at limit |
+| Resilience | `CircuitBreaker` retries, then fails open/closed per configuration |
+| Streaming | `wrapLLMStream` collects chunks, logs on stream completion |
+| Framework adapters | Optional Anthropic, OpenAI, and LangChain adapters |
+
+### 14.2 Configuration
 
 ```typescript
 interface GovernanceClientConfig {
-  platformUrl: string;   // e.g. "http://localhost:3000"
-  agentId: string;       // Registered agent UUID
-  apiKey: string;        // JWT token for authentication
+  platformUrl: string;             // e.g. "http://localhost:3000"
+  agentId: string;                 // Registered agent UUID
+  apiKey: string;                  // JWT token for authentication
+  budget?: BudgetConfig;           // Cost budget limits
+  resilience?: ResilienceConfig;   // Fail-open/fail-closed behavior
+  bufferMaxSize?: number;          // Event buffer capacity (default 50)
+  bufferFlushIntervalMs?: number;  // Auto-flush interval (default 5000ms)
+}
+
+interface BudgetConfig {
+  maxCostUsd: number;              // Hard spending cap
+  warnAtUsd?: number;              // Warning threshold
+  onBudgetExceeded?: 'throw' | 'warn' | 'log';
+}
+
+interface ResilienceConfig {
+  onPlatformUnavailable?: 'fail-open' | 'fail-closed';
+  retryAttempts?: number;          // Default 2
+  retryDelayMs?: number;           // Default 500ms
+  circuitBreakerThreshold?: number;     // Failures before tripping
+  circuitBreakerCooldownMs?: number;    // Cooldown before retry
 }
 ```
 
-### Public API
+### 14.3 Public API
 
 | Method | Purpose |
 |--------|---------|
-| `constructor(config)` | Creates client, generates unique `traceId` |
+| `constructor(config)` | Creates client, generates unique `traceId`, initializes EventBuffer, SpanManager, CircuitBreaker |
 | `traceId: string` | Readonly UUID grouping all events in this session |
-| `logEvent(payload)` | POST to `/api/v1/audit/log` — fire-and-forget audit event |
-| `createMessage(params)` | Wraps `anthropic.messages.create()`, auto-logs `llm_call` event with tokens, cost, latency, success/failure |
-| `callTool(name, inputs, fn)` | Wraps arbitrary async function, auto-logs `tool_call` event with latency and success/failure |
-| `requestApproval(params)` | POST to `/api/v1/approvals`, polls until resolved or timeout. Returns `{ decision, ticketId }` |
+| `wrapLLMCall<T>(fn, metadata)` | Wraps **any** async LLM call, auto-logs `llm_call` with provider, model, tokens, cost, latency |
+| `wrapLLMStream<T>(fn, metadata)` | Wraps **any** streaming LLM call, collects chunks, logs on completion |
+| `callTool(name, inputs, fn, options?)` | Pre-execution policy check → approval if needed → execute → log `tool_call` |
+| `checkPolicy(actionType, riskScore?)` | Calls `POST /api/v1/policies/check`, returns `{ effect }` |
+| `requestApproval(params)` | Creates ticket, tries SSE push first, falls back to polling |
+| `withSpan<T>(name, fn)` | Creates a named span scope; all events inside get the span's `spanId` |
+| `flush()` | Force-flush all buffered events immediately |
+| `destroy()` | Flush remaining events and stop the buffer timer |
 
-### Approval Polling
+### 14.4 Key Modules
 
-`requestApproval` creates a ticket and polls `GET /api/v1/approvals/:id` every `pollIntervalMs` (default 3s) until the status changes from PENDING or `maxWaitMs` (default 30min) elapses. Returns the final decision: `APPROVED`, `DENIED`, `EXPIRED`, `AUTO_APPROVED`, or `ERROR`.
+#### EventBuffer (`EventBuffer.ts`)
+
+Non-blocking event queue that batches audit events and flushes them asynchronously.
+
+- Events are pushed to an in-memory array (max `bufferMaxSize`, default 50)
+- A timer flushes every `bufferFlushIntervalMs` (default 5000ms)
+- Flushes early when the buffer reaches capacity
+- Sends batched events to `POST /api/v1/audit/batch`
+- Falls back to individual `POST /api/v1/audit/log` if batch endpoint fails
+- Completely non-blocking: `wrapLLMCall` and `callTool` return immediately after queuing the event
+
+#### SpanManager (`SpanManager.ts`)
+
+Manages hierarchical trace spans for complex agent workflows.
+
+- `withSpan(name, fn)` creates a new span with a unique `spanId`
+- Nested `withSpan` calls automatically set `parentSpanId` to the enclosing span's ID
+- All events logged within a span context inherit `spanId` and `parentSpanId`
+- Enables tree-view visualization in the TraceDrawer frontend component
+
+Example trace tree:
+```
+root-span (email-draft-workflow)
+├── llm-call-span (draft-email)
+├── tool-call-span (send_email)
+│   └── approval-span (approval_requested)
+└── llm-call-span (summarize)
+```
+
+#### CircuitBreaker (`CircuitBreaker.ts`)
+
+Protects agents from platform outages with configurable resilience behavior.
+
+| State | Behavior |
+|-------|----------|
+| CLOSED (healthy) | All requests pass through normally |
+| OPEN (tripped) | Requests are short-circuited based on `onPlatformUnavailable` |
+| HALF-OPEN | After cooldown, one request is let through to test recovery |
+
+- Retries failed platform calls up to `retryAttempts` times with `retryDelayMs` delay
+- After `circuitBreakerThreshold` consecutive failures, the circuit opens
+- `fail-open`: Agent continues executing without governance (logs warning)
+- `fail-closed`: Agent operations throw errors until platform recovers
+
+### 14.5 Pre-Execution Policy Gating
+
+Unlike v1 (where policies were only checked at approval time), v2 checks policies **before** a tool executes:
+
+```
+callTool("send_email", inputs, sendFn, { riskScore: 0.8 })
+  1. POST /api/v1/policies/check { agentId, actionType: "send_email" }
+  2. Response: { effect: "DENY" }       → throw PolicyDeniedError (tool never runs)
+     Response: { effect: "ALLOW" }      → execute sendFn(), log result
+     Response: { effect: "REQUIRE..." } → requestApproval() → wait → execute or throw
+```
+
+This prevents wasted LLM calls and side effects from actions that would be denied anyway.
+
+### 14.6 Approval Flow (v2)
+
+`requestApproval` now attempts SSE push-based notifications before falling back to polling:
+
+1. `POST /api/v1/approvals` creates the ticket
+2. SDK opens `GET /api/v1/events/agent-stream?token=<sseToken>&ticketId=<id>`
+3. Server pushes `approval_resolved` event when a human decides
+4. If SSE fails or isn't available, falls back to polling `GET /api/v1/approvals/:id` every `pollIntervalMs` (default 3s)
+5. Timeout after `maxWaitMs` (default 30min)
+
+### 14.7 Cost Budget Enforcement
+
+The SDK tracks cumulative cost across all `wrapLLMCall` and `callTool` invocations:
+
+- Each call's `costUsd` (from `LLMCallMetadata`) is added to a running total
+- When `warnAtUsd` is reached, a console warning is emitted
+- When `maxCostUsd` is reached, behavior depends on `onBudgetExceeded`:
+  - `'throw'` → throws `BudgetExceededError` (default)
+  - `'warn'` → logs warning, continues executing
+  - `'log'` → silent log, continues executing
+
+### 14.8 Custom Error Classes
+
+| Error Class | When Thrown |
+|-------------|------------|
+| `PolicyDeniedError` | `callTool` receives DENY from policy check, or approval is denied |
+| `BudgetExceededError` | Cumulative cost exceeds `budget.maxCostUsd` with `onBudgetExceeded: 'throw'` |
+
+Both are exported from `@agentos/governance-sdk` for agent-side error handling.
+
+### 14.9 Framework Adapters
+
+Optional adapters provide zero-config governance integration with popular LLM SDKs. Import from subpaths:
+
+#### Anthropic Adapter
+
+```typescript
+import { createAnthropicAdapter } from '@agentos/governance-sdk/adapters/anthropic';
+
+const { createMessage } = createAnthropicAdapter(governanceClient, anthropicClient);
+const response = await createMessage({ model: 'claude-sonnet-4-20250514', ... });
+// Automatically logged as llm_call with provider: 'anthropic', tokens, cost, latency
+```
+
+#### OpenAI Adapter
+
+```typescript
+import { createOpenAIAdapter } from '@agentos/governance-sdk/adapters/openai';
+
+const { createChatCompletion } = createOpenAIAdapter(governanceClient, openaiClient);
+const response = await createChatCompletion({ model: 'gpt-4o', ... });
+// Automatically logged as llm_call with provider: 'openai', tokens, cost, latency
+```
+
+#### LangChain Adapter
+
+```typescript
+import { createLangChainCallback } from '@agentos/governance-sdk/adapters/langchain';
+
+const callback = createLangChainCallback(governanceClient);
+const chain = new ChatOpenAI({ callbacks: [callback] });
+// All LLM and tool calls automatically logged via callback hooks
+```
+
+### 14.10 SDK v1 → v2 Migration Summary
+
+| v1 | v2 | Change Type |
+|----|----| ------------|
+| `createMessage(anthropicParams)` | `wrapLLMCall(fn, metadata)` | **Breaking** — provider-agnostic |
+| `callTool(name, inputs, fn)` | `callTool(name, inputs, fn, options?)` | **Breaking** — adds policy gate + options |
+| `logEvent(payload)` | (automatic via EventBuffer) | **Removed** — no manual logging needed |
+| `requestApproval(params)` (polling only) | `requestApproval(params)` (SSE + polling) | Enhanced — non-breaking |
+| — | `wrapLLMStream(fn, metadata)` | **New** |
+| — | `withSpan(name, fn)` | **New** |
+| — | `checkPolicy(actionType, riskScore?)` | **New** |
+| — | `flush()` / `destroy()` | **New** |
+| `@anthropic-ai/sdk` required | All AI SDKs optional (`peerDependencies`) | **Breaking** — install what you use |
 
 ---
 
@@ -1089,9 +1302,9 @@ interface GovernanceClientConfig {
 |--------|---------|
 | **Auth** | `RoleEnum`, `LoginSchema`, `UserSchema`, `AuthUserSchema`, `AuthResponseSchema`, `ErrorResponseSchema` |
 | **Agent** | `RiskTierSchema`, `EnvironmentSchema`, `AgentStatusSchema`, `AgentToolSchema`, `CreateAgentSchema`, `UpdateAgentSchema`, `UpdateAgentStatusSchema`, `AgentListQuerySchema`, `AgentIdParamsSchema`, `AgentSummarySchema`, `AgentStatsSchema`, `AgentDetailSchema` |
-| **Audit** | `AuditEventTypeSchema`, `AuditEventSchema`, `AuditQuerySchema`, `AuditLogSchema`, `TraceIdParamsSchema`, `TopToolSchema`, `AgentStatsResponseSchema` |
+| **Audit** | `AuditEventTypeSchema`, `AuditEventSchema`, `AuditQuerySchema`, `AuditLogSchema`, `AuditBatchSchema` *(v2)*, `TraceIdParamsSchema`, `TopToolSchema`, `AgentStatsResponseSchema` |
 | **Approval** | `ApprovalStatusSchema`, `CreateApprovalSchema`, `ApprovalDecisionSchema`, `ApprovalTicketSchema`, `ApprovalQuerySchema`, `ApprovalIdParamsSchema` |
-| **Policy** | `PolicyEffectSchema`, `PolicyRuleInputSchema`, `CreatePolicySchema`, `UpdatePolicySchema`, `PolicyIdParamsSchema`, `PolicyListQuerySchema`, `PolicyAssignSchema`, `PolicyUnassignParamsSchema`, `PolicyEvaluationRequestSchema`, `PolicyEvaluationResultSchema` |
+| **Policy** | `PolicyEffectSchema`, `PolicyRuleInputSchema`, `CreatePolicySchema`, `UpdatePolicySchema`, `PolicyIdParamsSchema`, `PolicyListQuerySchema`, `PolicyAssignSchema`, `PolicyUnassignParamsSchema`, `PolicyEvaluationRequestSchema`, `PolicyEvaluationResultSchema`, `PolicyCheckRequestSchema` *(v2)* |
 | **Analytics** | `DateRangeQuerySchema`, `CostTimelineQuerySchema`, `AgentLeaderboardQuerySchema`, `CostSummarySchema`, `CostTimelineSeriesSchema`, `CostTimelineSchema`, `UsageStatsSchema`, `AgentLeaderboardEntrySchema`, `AgentLeaderboardSchema`, `ModelUsageEntrySchema`, `ModelUsageSchema` |
 
 Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInput = z.infer<typeof CreateAgentSchema>`).
@@ -1120,7 +1333,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 | `analytics.service.test.ts` | Service | 17 | Aggregation functions, date ranges, sorting (Prisma-backed) |
 | `health-score.test.ts` | Unit | 10 | Health score weighting, bounds |
 | `cost-calculator.test.ts` | Unit | 8 | Per-model cost calculation |
-| `GovernanceClient.test.ts` | Unit | 6 | SDK methods, mocked fetch |
+| `GovernanceClient.test.ts` | Unit | 15 | SDK v2: EventBuffer, wrapLLMCall, callTool + policy gate, spans, budget, resilience *(rewritten in v2)* |
 | `agents.service.unit.test.ts` | Unit (mock) | 15 | AgentService: status transitions, CRUD, pagination, stats |
 | `audit.service.unit.test.ts` | Unit (mock) | 7 | AuditService: createLog, queryLogs, traces, stats, CSV |
 | `approvals.service.unit.test.ts` | Unit (mock) | 10 | ApprovalService: create, resolve, expire, list |
@@ -1133,7 +1346,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 | `PrismaAgentRepository.test.ts` | Unit | 3 | N+1 fix: groupBy called once, empty list skip, default to 0 *(FIX-04)* |
 | `api-versioning.test.ts` | Unit | 15 | 301 redirects, path/query preservation, unversioned endpoints *(FIX-05)* |
 
-**Total: 22 test files, 277 test cases**
+**Total: 22 test files, 286 test cases**
 
 ### Test Categories
 
@@ -1142,7 +1355,7 @@ Each schema has a corresponding exported TypeScript type (e.g., `CreateAgentInpu
 - **Unit tests — mock repos** (5 files, 54 cases): Pure business logic tests using in-memory mock repositories. No database, no network. Run in ~89ms total. *(Added in FIX-01)*
 - **Unit tests — infrastructure** (5 files, 45 cases): Error hierarchy, global handler, security headers, SSE token auth, redirect tests. *(Added in FIX-02/03/05)*
 - **Unit tests — repository** (1 file, 3 cases): Repository-level N+1 fix verification. *(Added in FIX-04)*
-- **Unit tests — pure functions** (3 files, 24 cases): Pure function tests (health score, cost calculator, SDK).
+- **Unit tests — pure functions** (3 files, 33 cases): Pure function tests (health score, cost calculator, SDK v2 — EventBuffer, policy gate, spans, budgets, resilience).
 
 ### Test Isolation
 
@@ -1280,7 +1493,7 @@ apps/web/src/
 │   ├── agents/           AgentFilterBar, AgentTable, RegisterAgentModal,
 │   │                     AgentHeader, AgentStats, 5 detail tabs
 │   ├── approvals/        ApprovalCard, ApprovalDecisionDialog, ResolvedTable
-│   ├── audit/            AuditFilterBar, AuditTable, TraceDrawer
+│   ├── audit/            AuditFilterBar, AuditTable, TraceDrawer (hierarchical tree view)
 │   ├── analytics/        CostSummaryCards, CostTimelineChart,
 │   │                     ApprovalPieChart, ModelUsageChart, LeaderboardTable
 │   ├── policies/         PolicyList
@@ -1449,7 +1662,7 @@ Admin-only features (edit agent, register agent, export CSV) are conditionally r
 **Audit Explorer** — Filter + Table + Drawer:
 - Filter bar: agent, event type, date range, trace ID search
 - Paginated sortable table with CSV export (admin/approver)
-- Click row → TraceDrawer (side sheet) with timeline view
+- Click row → TraceDrawer (side sheet) with **hierarchical tree view** *(v2: built from `spanId`/`parentSpanId` relationships)*
 
 **Analytics** — Charts dashboard:
 - Time range selector (7d / 30d / 90d)
@@ -1507,7 +1720,7 @@ The project follows 8 non-negotiable principles defined in the constitution:
 - Business logic unit-tested with Vitest using mock repositories (no DB required)
 - External services mocked in tests
 - Isolated test database with transactional cleanup for integration tests
-- 120 pure unit tests run in ~1.5s (mock repos, error classes, security, SSE, N+1, versioning); 136 total integration/service tests with DB
+- 129 pure unit tests run in ~1.5s (mock repos, error classes, security, SSE, N+1, versioning, SDK v2); 135 total integration/service tests with DB
 
 ### IV. Security-First
 - Rate limits on all endpoints (100/min global, 10/15min on login)
@@ -1547,7 +1760,7 @@ The project follows 8 non-negotiable principles defined in the constitution:
 | **ApprovalTicket** | A governance checkpoint requiring human decision for a risky action |
 | **Policy** | A named set of rules that determine how agent actions are governed |
 | **PolicyRule** | A single rule matching actionType + riskTier to an effect (ALLOW/DENY/REQUIRE) |
-| **GovernanceClient** | SDK used by agents to interact with the platform (log, call LLM, request approval) |
+| **GovernanceClient** | SDK v2 used by agents to interact with the platform (wrapLLMCall, callTool, withSpan, policy check) |
 | **Risk Tier** | Classification of agent danger level: LOW, MEDIUM, HIGH, CRITICAL |
 | **Health Score** | Composite metric (0-100) combining error rate, latency, cost, and activity |
 | **SSE** | Server-Sent Events — one-way realtime push from server to browser |
@@ -1573,7 +1786,19 @@ The project follows 8 non-negotiable principles defined in the constitution:
 | **N+1 Query** | Anti-pattern where a list query triggers N additional queries (one per item); fixed with `groupBy` |
 | **API Versioning** | Route prefix strategy (`/api/v1/`) enabling future breaking changes without disrupting existing consumers |
 | **301 Redirect** | Permanent redirect from old unversioned paths to versioned equivalents for backward compatibility |
+| **EventBuffer** | SDK component that queues audit events in-memory and batch-flushes them asynchronously to `/api/v1/audit/batch` |
+| **SpanManager** | SDK component that tracks `spanId` and `parentSpanId` for hierarchical trace trees via `withSpan()` |
+| **CircuitBreaker** | SDK resilience component with CLOSED/OPEN/HALF-OPEN states; retries failed platform calls, then fails open or closed |
+| **Span** | A named scope within a trace; has a unique `spanId` and optional `parentSpanId` for tree structure |
+| **Policy Gate** | Pre-execution policy check (`POST /api/v1/policies/check`) performed by `callTool` before running the tool function |
+| **PolicyDeniedError** | Custom error thrown when a policy evaluation returns DENY or an approval is denied |
+| **BudgetExceededError** | Custom error thrown when cumulative LLM/tool costs exceed the configured `maxCostUsd` |
+| **Framework Adapter** | Optional wrapper (Anthropic, OpenAI, LangChain) that auto-integrates an LLM SDK with governance logging |
+| **wrapLLMCall** | Generic SDK method that wraps any async LLM call with governance logging (provider-agnostic) |
+| **wrapLLMStream** | Generic SDK method that wraps any streaming LLM call, collecting chunks and logging on completion |
+| **Fail-Open** | Resilience mode where the agent continues operating without governance if the platform is unavailable |
+| **Fail-Closed** | Resilience mode where agent operations throw errors if the platform is unavailable |
 
 ---
 
-*Document generated from codebase analysis on 2026-03-21. Updated 2026-03-21 with FIX-01 through FIX-05. Covers EPICs 2, 4, 5, 6, 7, 8 + FIX-01 (Repository Pattern) + FIX-02 (Error Hierarchy) + FIX-03 (Security Headers) + FIX-04 (N+1 Fix) + FIX-05 (API Versioning).*
+*Document generated from codebase analysis on 2026-03-21. Updated 2026-04-05 with SDK v2 enhancements. Covers EPICs 2, 4, 5, 6, 7, 8 + FIX-01 (Repository Pattern) + FIX-02 (Error Hierarchy) + FIX-03 (Security Headers) + FIX-04 (N+1 Fix) + FIX-05 (API Versioning) + SDK v2 (Provider-Agnostic Core, EventBuffer, SpanManager, CircuitBreaker, Policy Gate, Cost Budgets, Streaming, Framework Adapters).*

@@ -100,6 +100,56 @@ export async function buildApp() {
         },
     );
 
+    fastify.get('/api/v1/events/agent-stream', async (request, reply) => {
+        const query = request.query as Record<string, string>;
+        const token = query['token'];
+        const ticketId = query['ticketId'];
+
+        if (!token) {
+            throw new AuthenticationError('TOKEN_MISSING');
+        }
+        if (!ticketId) {
+            return reply.status(400).send({ error: 'ticketId required' });
+        }
+
+        try {
+            const payload = jwt.verify(token, env.SSE_SECRET) as { type?: string };
+            if (payload.type !== 'sse') {
+                throw new Error('Not an SSE token');
+            }
+        } catch {
+            throw new AuthenticationError('TOKEN_INVALID');
+        }
+
+        reply.hijack();
+
+        const origin = env.NODE_ENV === 'production' ? env.FRONTEND_URL : '*';
+        reply.raw.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Credentials': 'true',
+        });
+
+        reply.raw.write(': connected\n\n');
+
+        const clientId = fastify.sse.addClient(reply);
+
+        const heartbeat = setInterval(() => {
+            try {
+                reply.raw.write(': ping\n\n');
+            } catch {
+                clearInterval(heartbeat);
+            }
+        }, 15_000);
+
+        reply.raw.on('close', () => {
+            clearInterval(heartbeat);
+            fastify.sse.removeClient(clientId);
+        });
+    });
+
     fastify.get('/api/v1/events/stream', async (request, reply) => {
         const token = (request.query as Record<string, string>)['token'];
         if (!token) {

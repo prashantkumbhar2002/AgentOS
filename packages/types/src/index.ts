@@ -49,6 +49,7 @@ export type {
 export {
   AuditEventTypeSchema,
   AuditEventSchema,
+  AuditBatchSchema,
   AuditQuerySchema,
   AuditLogSchema,
   TraceIdParamsSchema,
@@ -59,6 +60,7 @@ export {
 export type {
   AuditEventType,
   AuditEventInput,
+  AuditBatchInput,
   AuditQuery,
   AuditLog,
   TraceIdParams,
@@ -94,6 +96,7 @@ export {
   PolicyUnassignParamsSchema,
   PolicyEvaluationRequestSchema,
   PolicyEvaluationResultSchema,
+  PolicyCheckRequestSchema,
 } from './policy.js';
 
 export type {
@@ -107,6 +110,7 @@ export type {
   PolicyUnassignParams,
   PolicyEvaluationRequest,
   PolicyEvaluationResult,
+  PolicyCheckRequest,
 } from './policy.js';
 
 export {

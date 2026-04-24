@@ -64,6 +64,7 @@ model Agent {
   status       AgentStatus      @default(DRAFT)
   approvedBy   String?
   tags         String[]
+  budgetUsd    Float?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
   lastActiveAt DateTime?
@@ -85,6 +86,8 @@ model AuditLog {
   id           String   @id @default(uuid())
   agentId      String
   traceId      String
+  spanId       String?
+  parentSpanId String?
   event        String
   model        String?
   toolName     String?
@@ -104,6 +107,7 @@ model AuditLog {
   @@index([traceId])
   @@index([createdAt])
   @@index([event])
+  @@index([spanId])
 }
 
 model ApprovalTicket {

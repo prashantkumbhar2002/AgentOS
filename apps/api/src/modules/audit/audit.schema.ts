@@ -1,5 +1,6 @@
 export {
   AuditEventSchema,
+  AuditBatchSchema,
   AuditQuerySchema,
   TraceIdParamsSchema,
 } from '@agentos/types';
