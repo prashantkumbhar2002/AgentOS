@@ -31,82 +31,154 @@ interface TraceEvent {
   success?: boolean
   error?: string | null
   createdAt?: string | Date
-  children?: TraceEvent[]
 }
 
-function buildSpanTree(events: TraceEvent[]): TraceEvent[] {
-  const bySpanId = new Map<string, TraceEvent>()
-  const roots: TraceEvent[] = []
+interface SpanNode {
+  spanId: string | null
+  parentSpanId: string | null
+  events: TraceEvent[]
+  children: SpanNode[]
+  totalCost: number
+  totalLatency: number
+  hasFailure: boolean
+}
+
+const NO_SPAN_KEY = "__no_span__"
+
+function buildSpanTree(events: TraceEvent[]): SpanNode[] {
+  const groups = new Map<string, SpanNode>()
 
   for (const ev of events) {
-    const node: TraceEvent = { ...ev, children: [] }
-    if (ev.spanId) {
-      bySpanId.set(ev.spanId, node)
+    const key = ev.spanId ?? NO_SPAN_KEY
+    let node = groups.get(key)
+    if (!node) {
+      node = {
+        spanId: ev.spanId ?? null,
+        parentSpanId: ev.parentSpanId ?? null,
+        events: [],
+        children: [],
+        totalCost: 0,
+        totalLatency: 0,
+        hasFailure: false,
+      }
+      groups.set(key, node)
     }
-    // temporarily collect all as potential roots
-    roots.push(node)
+    if (!node.parentSpanId && ev.parentSpanId) {
+      node.parentSpanId = ev.parentSpanId
+    }
+    node.events.push(ev)
+    const c = ev.costUsd ?? ev.cost
+    if (typeof c === "number") node.totalCost += c
+    const l = ev.latencyMs ?? ev.durationMs
+    if (typeof l === "number") node.totalLatency += l
+    if (ev.success === false || ev.error != null) node.hasFailure = true
   }
 
-  // re-parent children
-  const actualRoots: TraceEvent[] = []
-  for (const node of roots) {
-    if (node.parentSpanId && bySpanId.has(node.parentSpanId)) {
-      bySpanId.get(node.parentSpanId)!.children!.push(node)
+  const roots: SpanNode[] = []
+  for (const node of groups.values()) {
+    const parentKey = node.parentSpanId
+    if (parentKey && groups.has(parentKey)) {
+      groups.get(parentKey)!.children.push(node)
     } else {
-      actualRoots.push(node)
+      roots.push(node)
     }
   }
 
-  return actualRoots
+  const sortByTime = (a: SpanNode, b: SpanNode) => {
+    const ta = new Date(a.events[0]?.createdAt ?? 0).getTime()
+    const tb = new Date(b.events[0]?.createdAt ?? 0).getTime()
+    return ta - tb
+  }
+  const sortRecursive = (nodes: SpanNode[]) => {
+    nodes.sort(sortByTime)
+    for (const n of nodes) sortRecursive(n.children)
+  }
+  sortRecursive(roots)
+
+  return roots
 }
 
-function EventNode({ ev, depth }: { ev: TraceEvent; depth: number }) {
+function EventRow({ ev }: { ev: TraceEvent }) {
   const ok = ev.success !== false && ev.error == null
   const modelTool = ev.model ?? ev.toolName ?? ev.tool ?? ev.toolId ?? "—"
   const cost = ev.costUsd ?? ev.cost
   const lat = ev.latencyMs ?? ev.durationMs
-  const hasChildren = ev.children && ev.children.length > 0
+
+  return (
+    <div className="space-y-1 rounded-md border bg-muted/30 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <EventBadge type={ev.eventType ?? ev.event ?? ev.type} />
+        <span className="text-xs text-muted-foreground">
+          {ev.createdAt ? formatRelativeTime(ev.createdAt) : "—"}
+        </span>
+        {ok ? (
+          <Badge className="bg-emerald-600 text-[10px] hover:bg-emerald-600">OK</Badge>
+        ) : (
+          <Badge variant="destructive" className="text-[10px]">
+            Fail
+          </Badge>
+        )}
+      </div>
+      <p className="font-mono text-xs text-muted-foreground">{modelTool}</p>
+      <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+        <span>Cost: {typeof cost === "number" ? formatUsd(cost) : "—"}</span>
+        <span>Latency: {typeof lat === "number" ? formatDuration(lat) : "—"}</span>
+      </div>
+    </div>
+  )
+}
+
+function SpanNodeView({ node, depth }: { node: SpanNode; depth: number }) {
+  const indent = depth * 16
+  const isSpan = node.spanId !== null
 
   return (
     <div>
       <div className="relative">
         <span
-          className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-primary"
-          style={{ marginLeft: depth * 16 }}
+          className={`absolute -left-[21px] top-2 h-2.5 w-2.5 rounded-full ${
+            node.hasFailure ? "bg-destructive" : "bg-primary"
+          }`}
+          style={{ marginLeft: indent }}
         />
         <div
-          className="space-y-2 rounded-md border bg-muted/30 p-3"
-          style={{ marginLeft: depth * 16 }}
+          className="space-y-2 rounded-md border bg-card p-3"
+          style={{ marginLeft: indent }}
         >
-          <div className="flex flex-wrap items-center gap-2">
-            <EventBadge type={ev.eventType ?? ev.event ?? ev.type} />
-            <span className="text-xs text-muted-foreground">
-              {ev.createdAt ? formatRelativeTime(ev.createdAt) : "—"}
-            </span>
-            {ok ? (
-              <Badge className="bg-emerald-600 text-[10px] hover:bg-emerald-600">OK</Badge>
-            ) : (
-              <Badge variant="destructive" className="text-[10px]">
-                Fail
-              </Badge>
-            )}
-            {ev.spanId && (
-              <span className="font-mono text-[10px] text-muted-foreground/60">
-                span:{ev.spanId.slice(0, 8)}
+          {isSpan && (
+            <div className="flex flex-wrap items-center gap-2 border-b pb-2">
+              <span className="font-mono text-[10px] text-muted-foreground">
+                span:{node.spanId!.slice(0, 8)}
               </span>
-            )}
-          </div>
-          <p className="font-mono text-xs text-muted-foreground">{modelTool}</p>
-          <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-            <span>Cost: {typeof cost === "number" ? formatUsd(cost) : "—"}</span>
-            <span>Latency: {typeof lat === "number" ? formatDuration(lat) : "—"}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {node.events.length} {node.events.length === 1 ? "event" : "events"}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                Σ cost: {formatUsd(node.totalCost)}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                Σ latency: {formatDuration(node.totalLatency)}
+              </span>
+            </div>
+          )}
+          <div className="space-y-2">
+            {node.events.map((ev, i) => (
+              <EventRow key={ev.id ?? `${node.spanId ?? "root"}-${i}`} ev={ev} />
+            ))}
           </div>
         </div>
       </div>
-      {hasChildren &&
-        ev.children!.map((child, i) => (
-          <EventNode key={child.id ?? `${depth}-${i}`} ev={child} depth={depth + 1} />
-        ))}
+      {node.children.length > 0 && (
+        <div className="mt-3 space-y-3">
+          {node.children.map((child) => (
+            <SpanNodeView
+              key={child.spanId ?? `${depth}-no-span`}
+              node={child}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -183,8 +255,12 @@ export function TraceDrawer({ traceId, onClose }: TraceDrawerProps) {
                 {tree.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No events in this trace.</p>
                 ) : (
-                  tree.map((ev, i) => (
-                    <EventNode key={ev.id ?? i} ev={ev} depth={0} />
+                  tree.map((node, i) => (
+                    <SpanNodeView
+                      key={node.spanId ?? `root-${i}`}
+                      node={node}
+                      depth={0}
+                    />
                   ))
                 )}
               </div>
