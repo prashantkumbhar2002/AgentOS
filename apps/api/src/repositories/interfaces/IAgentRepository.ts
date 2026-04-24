@@ -1,6 +1,12 @@
 import type { CreateAgentInput, UpdateAgentInput, AgentListQuery } from '@agentos/types';
 import type { AgentDetail, AgentSummary, PaginatedResult } from '../../types/dto.js';
 
+export interface AgentApiPrincipal {
+    id: string;
+    name: string;
+    status: string;
+}
+
 export interface IAgentRepository {
     findById(id: string): Promise<AgentDetail | null>;
     findMany(filter: AgentListQuery): Promise<PaginatedResult<AgentSummary>>;
@@ -11,4 +17,6 @@ export interface IAgentRepository {
     exists(id: string): Promise<boolean>;
     updateLastActiveAt(id: string): Promise<void>;
     findNameById(id: string): Promise<string | null>;
+    findByApiKeyHash(hash: string): Promise<AgentApiPrincipal | null>;
+    setApiKey(id: string, hash: string, hint: string): Promise<void>;
 }

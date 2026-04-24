@@ -20,7 +20,7 @@ import showcaseRoutes from './modules/showcase/showcase.routes.js';
 import { createContainer } from './container.js';
 import { env } from './config/env.js';
 import { AuthenticationError } from './errors/index.js';
-import { authenticate } from './plugins/auth.js';
+import { authenticateAgentOrUser } from './plugins/auth.js';
 
 export async function buildApp() {
     const fastify = Fastify({
@@ -86,16 +86,19 @@ export async function buildApp() {
     await fastify.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
     await fastify.register(showcaseRoutes, { prefix: '/api/v1/showcase' });
 
+    const eventsTokenAuth = authenticateAgentOrUser(fastify);
     fastify.post(
         '/api/v1/events/token',
-        { preHandler: [authenticate] },
+        { preHandler: [eventsTokenAuth] },
         async (request, reply) => {
-            const { id, role } = request.user;
-            const sseToken = jwt.sign(
-                { userId: id, role, type: 'sse' },
-                env.SSE_SECRET,
-                { expiresIn: 30 },
-            );
+            let payload: Record<string, unknown>;
+            if (request.agent) {
+                payload = { agentId: request.agent.id, type: 'sse' };
+            } else {
+                const { id, role } = request.user;
+                payload = { userId: id, role, type: 'sse' };
+            }
+            const sseToken = jwt.sign(payload, env.SSE_SECRET, { expiresIn: 30 });
             return reply.status(200).send({ sseToken, expiresIn: 30 });
         },
     );

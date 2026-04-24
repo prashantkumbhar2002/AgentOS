@@ -6,7 +6,7 @@ import {
     TraceIdParamsSchema,
     AgentIdParamsSchema,
 } from './audit.schema.js';
-import { authenticate } from '../../plugins/auth.js';
+import { authenticate, authenticateAgentOrUser, assertAgentScope } from '../../plugins/auth.js';
 import { calculateCost } from '../../utils/cost-calculator.js';
 import { NotFoundError, ValidationError, AuthorizationError } from '../../errors/index.js';
 
@@ -14,11 +14,12 @@ export default async function auditRoutes(
     fastify: FastifyInstance,
 ): Promise<void> {
     const { auditService, agentService } = fastify.services;
+    const agentOrUser = authenticateAgentOrUser(fastify);
 
     fastify.post(
         '/log',
         {
-            preHandler: [authenticate],
+            preHandler: [agentOrUser],
             config: {
                 rateLimit: {
                     max: 1000,
@@ -35,6 +36,8 @@ export default async function auditRoutes(
             if (!parsed.success) {
                 throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
+
+            assertAgentScope(request, parsed.data.agentId);
 
             const agentExists = await agentService.getAgentById(parsed.data.agentId);
             if (!agentExists) {
@@ -70,7 +73,7 @@ export default async function auditRoutes(
     fastify.post(
         '/batch',
         {
-            preHandler: [authenticate],
+            preHandler: [agentOrUser],
             config: {
                 rateLimit: {
                     max: 200,
@@ -90,6 +93,11 @@ export default async function auditRoutes(
             }
 
             const agentIds = [...new Set(parsed.data.events.map((e) => e.agentId))];
+
+            for (const agentId of agentIds) {
+                assertAgentScope(request, agentId);
+            }
+
             for (const agentId of agentIds) {
                 const agentExists = await agentService.getAgentById(agentId);
                 if (!agentExists) {

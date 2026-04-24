@@ -1,6 +1,6 @@
 import type { PrismaClient, Prisma } from '@prisma/client';
 import type { CreateAgentInput, UpdateAgentInput, AgentListQuery } from '@agentos/types';
-import type { IAgentRepository } from '../interfaces/IAgentRepository.js';
+import type { IAgentRepository, AgentApiPrincipal } from '../interfaces/IAgentRepository.js';
 import type { AgentDetail, AgentSummary, PaginatedResult } from '../../types/dto.js';
 
 export class PrismaAgentRepository implements IAgentRepository {
@@ -166,6 +166,21 @@ export class PrismaAgentRepository implements IAgentRepository {
             select: { name: true },
         });
         return agent?.name ?? null;
+    }
+
+    async findByApiKeyHash(hash: string): Promise<AgentApiPrincipal | null> {
+        const agent = await this.prisma.agent.findUnique({
+            where: { apiKeyHash: hash },
+            select: { id: true, name: true, status: true },
+        });
+        return agent ? { id: agent.id, name: agent.name, status: agent.status } : null;
+    }
+
+    async setApiKey(id: string, hash: string, hint: string): Promise<void> {
+        await this.prisma.agent.update({
+            where: { id },
+            data: { apiKeyHash: hash, apiKeyHint: hint },
+        });
     }
 
     private toDetail(agent: any): AgentDetail {

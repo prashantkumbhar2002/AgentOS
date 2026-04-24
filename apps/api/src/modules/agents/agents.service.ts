@@ -5,6 +5,7 @@ import type { IApprovalRepository } from '../../repositories/interfaces/IApprova
 import type { IPolicyRepository } from '../../repositories/interfaces/IPolicyRepository.js';
 import type { AgentDetail, AgentDetailView, AgentSummary, AgentStats, PaginatedResult } from '../../types/dto.js';
 import { calculateHealthScore } from '../../utils/health-score.js';
+import { generateAgentApiKey } from '../../utils/api-key.js';
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
     DRAFT: ['APPROVED', 'DEPRECATED'],
@@ -118,5 +119,19 @@ export class AgentService {
         if (!agent) return null;
 
         return { agent, oldStatus };
+    }
+
+    /**
+     * Generate (or rotate) an API key for an agent. The plaintext key is
+     * returned only once and stored hashed. Existing keys are immediately
+     * invalidated by the new hash.
+     */
+    async rotateApiKey(id: string): Promise<{ apiKey: string; hint: string } | null> {
+        const existing = await this.agentRepo.findById(id);
+        if (!existing) return null;
+
+        const { apiKey, hash, hint } = generateAgentApiKey();
+        await this.agentRepo.setApiKey(id, hash, hint);
+        return { apiKey, hint };
     }
 }

@@ -1,10 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import type { CreateAgentInput, UpdateAgentInput, AgentListQuery } from '@agentos/types';
-import type { IAgentRepository } from '../interfaces/IAgentRepository.js';
+import type { IAgentRepository, AgentApiPrincipal } from '../interfaces/IAgentRepository.js';
 import type { AgentDetail, AgentSummary, PaginatedResult } from '../../types/dto.js';
+
+interface ApiKeyRecord {
+    hash: string;
+    hint: string;
+}
 
 export class MockAgentRepository implements IAgentRepository {
     readonly store = new Map<string, AgentDetail>();
+    private readonly apiKeys = new Map<string, ApiKeyRecord>();
 
     async findById(id: string): Promise<AgentDetail | null> {
         return this.store.get(id) ?? null;
@@ -119,6 +125,21 @@ export class MockAgentRepository implements IAgentRepository {
 
     async findNameById(id: string): Promise<string | null> {
         return this.store.get(id)?.name ?? null;
+    }
+
+    async findByApiKeyHash(hash: string): Promise<AgentApiPrincipal | null> {
+        for (const [agentId, record] of this.apiKeys) {
+            if (record.hash === hash) {
+                const agent = this.store.get(agentId);
+                if (!agent) return null;
+                return { id: agent.id, name: agent.name, status: agent.status };
+            }
+        }
+        return null;
+    }
+
+    async setApiKey(id: string, hash: string, hint: string): Promise<void> {
+        this.apiKeys.set(id, { hash, hint });
     }
 
     seed(overrides: Partial<AgentDetail> = {}): AgentDetail {

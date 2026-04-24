@@ -5,23 +5,26 @@ import {
     ApprovalQuerySchema,
     ApprovalIdParamsSchema,
 } from './approvals.schema.js';
-import { authenticate, requireRole } from '../../plugins/auth.js';
+import { authenticate, authenticateAgentOrUser, assertAgentScope, requireRole } from '../../plugins/auth.js';
 import { getRiskLabel } from '../../utils/risk-label.js';
-import { NotFoundError, ValidationError, PolicyBlockedError, ConflictError } from '../../errors/index.js';
+import { NotFoundError, ValidationError, PolicyBlockedError, ConflictError, AuthorizationError } from '../../errors/index.js';
 
 export default async function approvalRoutes(
     fastify: FastifyInstance,
 ): Promise<void> {
     const { approvalService, policyEvaluator, agentService } = fastify.services;
+    const agentOrUser = authenticateAgentOrUser(fastify);
 
     fastify.post(
         '/',
-        { preHandler: [authenticate] },
+        { preHandler: [agentOrUser] },
         async (request, reply) => {
             const parsed = CreateApprovalSchema.safeParse(request.body);
             if (!parsed.success) {
                 throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
+
+            assertAgentScope(request, parsed.data.agentId);
 
             const agentExists = await agentService.getAgentById(parsed.data.agentId);
             if (!agentExists) {
@@ -85,7 +88,7 @@ export default async function approvalRoutes(
 
     fastify.get(
         '/:id',
-        { preHandler: [authenticate] },
+        { preHandler: [agentOrUser] },
         async (request, reply) => {
             const paramsParsed = ApprovalIdParamsSchema.safeParse(request.params);
             if (!paramsParsed.success) {
@@ -95,6 +98,10 @@ export default async function approvalRoutes(
             const ticket = await approvalService.getTicket(paramsParsed.data.id);
             if (!ticket) {
                 throw new NotFoundError('Ticket', paramsParsed.data.id);
+            }
+
+            if (request.agent && ticket.agentId !== request.agent.id) {
+                throw new AuthorizationError('agent scope');
             }
 
             return reply.status(200).send(ticket);

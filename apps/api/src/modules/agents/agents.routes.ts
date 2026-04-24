@@ -191,6 +191,31 @@ export default async function agentsRoutes(
         },
     );
 
+    fastify.post(
+        '/:id/api-key',
+        { preHandler: [requireRole('admin')] },
+        async (request, reply) => {
+            const paramsParsed = AgentIdParamsSchema.safeParse(request.params);
+            if (!paramsParsed.success) {
+                throw new ValidationError('Validation failed', {
+                    issues: paramsParsed.error.issues,
+                });
+            }
+
+            const result = await agentService.rotateApiKey(paramsParsed.data.id);
+            if (!result) {
+                throw new NotFoundError('Agent', paramsParsed.data.id);
+            }
+
+            return reply.status(201).send({
+                agentId: paramsParsed.data.id,
+                apiKey: result.apiKey,
+                hint: result.hint,
+                warning: 'Store this key securely. It cannot be retrieved again.',
+            });
+        },
+    );
+
     fastify.delete(
         '/:id',
         { preHandler: [requireRole('admin')] },

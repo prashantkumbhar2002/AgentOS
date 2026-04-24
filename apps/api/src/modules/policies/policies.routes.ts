@@ -9,7 +9,7 @@ import {
     PolicyEvaluationRequestSchema,
     PolicyCheckRequestSchema,
 } from './policies.schema.js';
-import { authenticate, requireRole } from '../../plugins/auth.js';
+import { authenticate, authenticateAgentOrUser, assertAgentScope, requireRole } from '../../plugins/auth.js';
 import { getRiskLabel } from '../../utils/risk-label.js';
 import { NotFoundError, ValidationError, ConflictError } from '../../errors/index.js';
 
@@ -17,6 +17,7 @@ export default async function policyRoutes(
     fastify: FastifyInstance,
 ): Promise<void> {
     const { policyService, policyEvaluator } = fastify.services;
+    const agentOrUser = authenticateAgentOrUser(fastify);
 
     fastify.post(
         '/evaluate',
@@ -47,12 +48,14 @@ export default async function policyRoutes(
 
     fastify.post(
         '/check',
-        { preHandler: [authenticate] },
+        { preHandler: [agentOrUser] },
         async (request, reply) => {
             const parsed = PolicyCheckRequestSchema.safeParse(request.body);
             if (!parsed.success) {
                 throw new ValidationError('Validation failed', { issues: parsed.error.issues });
             }
+
+            assertAgentScope(request, parsed.data.agentId);
 
             const { label: riskTier } = getRiskLabel(parsed.data.riskScore);
 
