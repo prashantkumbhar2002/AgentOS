@@ -148,45 +148,68 @@ export class GovernanceClient {
         }
     }
 
-    wrapLLMStream<T>(
-        fn: () => T,
-        onComplete: (stream: T) => LLMCallMetadata | void,
-    ): T {
+    /**
+     * Wrap a streaming LLM call. Returns an async iterable that yields each
+     * chunk to the caller while collecting them for `onComplete`, which is
+     * invoked exactly once after the caller has finished iterating (or after
+     * the stream errors). The original stream is NOT consumed by the SDK.
+     *
+     * @example
+     *   for await (const chunk of gov.wrapLLMStream(
+     *     () => client.messages.stream(...),
+     *     (chunks) => ({ provider: 'anthropic', model, inputTokens, outputTokens, costUsd })
+     *   )) {
+     *     process.stdout.write(chunk.delta);
+     *   }
+     */
+    wrapLLMStream<TChunk>(
+        fn: () => AsyncIterable<TChunk>,
+        onComplete: (chunks: TChunk[]) => LLMCallMetadata | void,
+    ): AsyncIterable<TChunk> {
         this.checkBudget();
         const start = Date.now();
-        const stream = fn();
+        const source = fn();
+        const logEvent = this.logEvent.bind(this);
+        const trackCost = this.trackCost.bind(this);
 
-        Promise.resolve().then(async () => {
-            try {
-        if (stream && typeof (stream as unknown as Record<symbol, unknown>)[Symbol.asyncIterator] === 'function') {
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          for await (const _ of stream as unknown as AsyncIterable<unknown>) {
-            /* consume to completion */
-          }
-        }
-            } catch {
-                /* stream errors handled by caller */
-            }
-
-            const latencyMs = Date.now() - start;
-            const meta = onComplete(stream);
-            if (meta) {
-                const costUsd = meta.costUsd ?? 0;
-                this.trackCost(costUsd);
-                this.logEvent({
-                    event: 'llm_call',
-                    model: meta.model,
-                    provider: meta.provider,
-                    inputTokens: meta.inputTokens,
-                    outputTokens: meta.outputTokens,
-                    costUsd,
-                    latencyMs,
-                    success: true,
-                });
-            }
-        });
-
-        return stream;
+        return {
+            [Symbol.asyncIterator]: async function* () {
+                const collected: TChunk[] = [];
+                try {
+                    for await (const chunk of source) {
+                        collected.push(chunk);
+                        yield chunk;
+                    }
+                    const latencyMs = Date.now() - start;
+                    const meta = onComplete(collected);
+                    if (meta) {
+                        const costUsd = meta.costUsd ?? 0;
+                        trackCost(costUsd);
+                        logEvent({
+                            event: 'llm_call',
+                            model: meta.model,
+                            provider: meta.provider,
+                            inputTokens: meta.inputTokens,
+                            outputTokens: meta.outputTokens,
+                            costUsd,
+                            latencyMs,
+                            success: true,
+                        });
+                    }
+                } catch (err) {
+                    const latencyMs = Date.now() - start;
+                    logEvent({
+                        event: 'llm_call',
+                        provider: 'unknown',
+                        model: 'unknown',
+                        latencyMs,
+                        success: false,
+                        errorMsg: err instanceof Error ? err.message : String(err),
+                    });
+                    throw err;
+                }
+            },
+        };
     }
 
     async callTool<T>(
