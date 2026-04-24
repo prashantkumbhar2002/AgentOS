@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GovernanceClient, PolicyDeniedError, BudgetExceededError } from './GovernanceClient.js';
+import { GovernanceClient, PolicyDeniedError, BudgetExceededError, isPolicyDeniedError } from './GovernanceClient.js';
+import { EventBuffer } from './EventBuffer.js';
 
 const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -8,6 +9,7 @@ function createClient(overrides?: Partial<ConstructorParameters<typeof Governanc
         platformUrl: 'http://localhost:3000',
         agentId: VALID_UUID,
         apiKey: 'test-api-key',
+        autoShutdown: false,
         ...overrides,
     });
 }
@@ -315,9 +317,179 @@ describe('GovernanceClient', () => {
         const policyErr = new PolicyDeniedError('send_email', 'blocked');
         expect(policyErr.name).toBe('PolicyDeniedError');
         expect(policyErr.actionType).toBe('send_email');
+        expect(policyErr.kind).toBe('POLICY');
+        expect(policyErr.ticketId).toBeUndefined();
 
         const budgetErr = new BudgetExceededError(1.5, 1.0);
         expect(budgetErr.name).toBe('BudgetExceededError');
         expect(budgetErr.currentCost).toBe(1.5);
+    });
+
+    it('PolicyDeniedError exposes ticketId and kind when surfaced from approval flow', async () => {
+        let call = 0;
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            call += 1;
+            if (url.includes('/policies/check')) {
+                return {
+                    ok: true,
+                    json: async () => ({ effect: 'REQUIRE_APPROVAL', reason: 'manual review' }),
+                };
+            }
+            if (url.includes('/approvals') && call === 2) {
+                return {
+                    ok: true,
+                    json: async () => ({ ticketId: 'ticket-xyz' }),
+                };
+            }
+            if (url.includes('/events/token')) {
+                return { ok: true, json: async () => ({ sseToken: 'fake' }) };
+            }
+            if (url.includes('/approvals/ticket-xyz')) {
+                return { ok: true, json: async () => ({ status: 'DENIED' }) };
+            }
+            return { ok: true, json: async () => ({}) };
+        }));
+
+        const client = createClient();
+        await expect(
+            client.callTool('send_email', { to: 'x' }, async () => 'sent', {
+                riskScore: 0.5,
+                approvalParams: { reasoning: 'test' },
+            }),
+        ).rejects.toMatchObject({
+            name: 'PolicyDeniedError',
+            ticketId: 'ticket-xyz',
+            kind: 'APPROVAL_DENIED',
+        });
+        await client.shutdown();
+    });
+
+    it('isPolicyDeniedError tolerates cross-realm errors', () => {
+        expect(isPolicyDeniedError(new PolicyDeniedError('a', 'b'))).toBe(true);
+        expect(isPolicyDeniedError({ name: 'PolicyDeniedError' })).toBe(true);
+        expect(isPolicyDeniedError(new Error('boom'))).toBe(false);
+        expect(isPolicyDeniedError(null)).toBe(false);
+    });
+
+    it('withTrace isolates traceId across concurrent invocations', async () => {
+        const client = createClient();
+        const seenA: string[] = [];
+        const seenB: string[] = [];
+
+        await Promise.all([
+            client.withTrace(async () => {
+                seenA.push(client.traceId);
+                await new Promise((r) => setTimeout(r, 5));
+                seenA.push(client.traceId);
+                await new Promise((r) => setTimeout(r, 5));
+                seenA.push(client.traceId);
+            }),
+            client.withTrace(async () => {
+                seenB.push(client.traceId);
+                await new Promise((r) => setTimeout(r, 5));
+                seenB.push(client.traceId);
+                await new Promise((r) => setTimeout(r, 5));
+                seenB.push(client.traceId);
+            }),
+        ]);
+
+        expect(new Set(seenA).size).toBe(1);
+        expect(new Set(seenB).size).toBe(1);
+        expect(seenA[0]).not.toBe(seenB[0]);
+
+        const outside = client.traceId;
+        expect(outside).not.toBe(seenA[0]);
+        expect(outside).not.toBe(seenB[0]);
+
+        await client.shutdown();
+    });
+
+    it('withTrace isolates span hierarchy across concurrent invocations', async () => {
+        const client = createClient();
+        let aSpanId = '';
+        let bSpanId = '';
+
+        await Promise.all([
+            client.withTrace(async () => {
+                client.startSpan('a-root');
+                aSpanId = client['spanManager'].currentSpanId ?? '';
+                await new Promise((r) => setTimeout(r, 5));
+                expect(client['spanManager'].currentSpanId).toBe(aSpanId);
+                client.endSpan();
+            }),
+            client.withTrace(async () => {
+                client.startSpan('b-root');
+                bSpanId = client['spanManager'].currentSpanId ?? '';
+                await new Promise((r) => setTimeout(r, 5));
+                expect(client['spanManager'].currentSpanId).toBe(bSpanId);
+                client.endSpan();
+            }),
+        ]);
+
+        expect(aSpanId).not.toBe('');
+        expect(bSpanId).not.toBe('');
+        expect(aSpanId).not.toBe(bSpanId);
+        await client.shutdown();
+    });
+});
+
+describe('EventBuffer resilience', () => {
+    beforeEach(() => {
+        vi.spyOn(console, 'warn').mockImplementation(() => { });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('requeues batches on transient failure and retries with backoff', async () => {
+        let attempt = 0;
+        const flushFn = vi.fn(async (events: Record<string, unknown>[]) => {
+            attempt += 1;
+            if (attempt < 2) throw new Error('boom');
+            return events.length === 1 ? undefined : undefined;
+        });
+
+        const buf = new EventBuffer(flushFn, 1, 5_000, {
+            maxFlushAttempts: 5,
+            retryBaseMs: 1,
+            retryMaxMs: 2,
+        });
+
+        buf.push({ event: 'one' });
+        // first attempt fails immediately because batch size = 1
+        await new Promise((r) => setTimeout(r, 30));
+        // second attempt should have happened from the scheduled retry
+        expect(flushFn.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(buf.pending).toBe(0);
+        expect(buf.dropped).toBe(0);
+    });
+
+    it('drops batches after exceeding maxFlushAttempts', async () => {
+        const flushFn = vi.fn(async () => {
+            throw new Error('always fails');
+        });
+
+        const buf = new EventBuffer(flushFn, 1, 5_000, {
+            maxFlushAttempts: 3,
+            retryBaseMs: 1,
+            retryMaxMs: 1,
+        });
+
+        buf.push({ event: 'one' });
+        await new Promise((r) => setTimeout(r, 50));
+        expect(flushFn.mock.calls.length).toBe(3);
+        expect(buf.pending).toBe(0);
+        expect(buf.dropped).toBe(1);
+    });
+
+    it('caps queue at maxQueueSize, dropping oldest events', () => {
+        const flushFn = vi.fn(async () => { });
+        const buf = new EventBuffer(flushFn, 1000, 10_000, { maxQueueSize: 3 });
+
+        for (let i = 0; i < 5; i++) buf.push({ idx: i });
+
+        expect(buf.pending).toBe(3);
+        expect(buf.dropped).toBe(2);
     });
 });

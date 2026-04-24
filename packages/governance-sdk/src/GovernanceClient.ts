@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventBuffer } from './EventBuffer.js';
 import { SpanManager } from './SpanManager.js';
 import { CircuitBreaker } from './CircuitBreaker.js';
+
+interface TraceContext {
+    traceId: string;
+}
 
 export interface LLMCallMetadata {
     provider: string;
@@ -39,16 +44,39 @@ export interface GovernanceClientConfig {
     resilience?: ResilienceConfig;
     bufferMaxSize?: number;
     bufferFlushIntervalMs?: number;
+    /** Hard cap on queued events; oldest dropped on overflow. Defaults to 50× batch size. */
+    bufferMaxQueueSize?: number;
+    /** Max retry attempts per batch before dropping. Default 5. */
+    bufferMaxFlushAttempts?: number;
+    /**
+     * Automatically register process exit handlers (SIGINT/SIGTERM/beforeExit)
+     * to best-effort flush remaining buffered events. Default: true in Node.js.
+     * Set to false if you manage shutdown explicitly.
+     */
+    autoShutdown?: boolean;
 }
+
+export type PolicyDenialKind = 'POLICY' | 'APPROVAL_DENIED' | 'APPROVAL_EXPIRED' | 'APPROVAL_TIMEOUT' | 'UNKNOWN';
 
 export class PolicyDeniedError extends Error {
     constructor(
         public readonly actionType: string,
         public readonly reason: string,
+        public readonly ticketId?: string,
+        public readonly kind: PolicyDenialKind = 'POLICY',
     ) {
         super(`Policy denied action "${actionType}": ${reason}`);
         this.name = 'PolicyDeniedError';
     }
+}
+
+export function isPolicyDeniedError(err: unknown): err is PolicyDeniedError {
+    if (err instanceof PolicyDeniedError) return true;
+    return (
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { name?: unknown }).name === 'PolicyDeniedError'
+    );
 }
 
 export class BudgetExceededError extends Error {
@@ -70,15 +98,21 @@ export class GovernanceClient {
     private readonly circuitBreaker: CircuitBreaker;
     private readonly budgetConfig?: BudgetConfig;
     private readonly resilienceConfig: ResilienceConfig;
+    private readonly traceStorage = new AsyncLocalStorage<TraceContext>();
+    private readonly defaultTraceId: string;
     private cumulativeCostUsd = 0;
-
-    readonly traceId: string;
+    private exitHandlersInstalled = false;
+    private readonly exitHandlers = {
+        beforeExit: () => { void this.shutdown(); },
+        sigint: () => { void this.shutdown().finally(() => process.exit(130)); },
+        sigterm: () => { void this.shutdown().finally(() => process.exit(143)); },
+    };
 
     constructor(config: GovernanceClientConfig) {
         this.platformUrl = config.platformUrl.replace(/\/$/, '');
         this.agentId = config.agentId;
         this.apiKey = config.apiKey;
-        this.traceId = randomUUID();
+        this.defaultTraceId = randomUUID();
         this.budgetConfig = config.budget;
         this.resilienceConfig = config.resilience ?? {};
         this.spanManager = new SpanManager();
@@ -91,6 +125,69 @@ export class GovernanceClient {
             (events) => this.flushEvents(events),
             config.bufferMaxSize ?? 20,
             config.bufferFlushIntervalMs ?? 5_000,
+            {
+                maxQueueSize: config.bufferMaxQueueSize,
+                maxFlushAttempts: config.bufferMaxFlushAttempts,
+            },
+        );
+
+        if ((config.autoShutdown ?? true) && typeof process !== 'undefined' && typeof process.on === 'function') {
+            this.installExitHandlers();
+        }
+    }
+
+    private installExitHandlers(): void {
+        if (this.exitHandlersInstalled) return;
+        this.exitHandlersInstalled = true;
+        process.once('beforeExit', this.exitHandlers.beforeExit);
+        // SIGINT/SIGTERM: only install if no other handler exists, to avoid
+        // double-handling in apps that already manage signals themselves.
+        if (process.listenerCount('SIGINT') === 0) {
+            process.once('SIGINT', this.exitHandlers.sigint);
+        }
+        if (process.listenerCount('SIGTERM') === 0) {
+            process.once('SIGTERM', this.exitHandlers.sigterm);
+        }
+    }
+
+    private uninstallExitHandlers(): void {
+        if (!this.exitHandlersInstalled) return;
+        this.exitHandlersInstalled = false;
+        process.off('beforeExit', this.exitHandlers.beforeExit);
+        process.off('SIGINT', this.exitHandlers.sigint);
+        process.off('SIGTERM', this.exitHandlers.sigterm);
+    }
+
+    /**
+     * The traceId currently in scope. Returns the active per-invocation trace
+     * inside `withTrace`, otherwise the long-lived default for this client.
+     */
+    get traceId(): string {
+        return this.traceStorage.getStore()?.traceId ?? this.defaultTraceId;
+    }
+
+    /** Mint a fresh trace ID without entering it. Useful when correlating IDs across boundaries. */
+    newTraceId(): string {
+        return randomUUID();
+    }
+
+    /**
+     * Run `fn` inside an isolated trace context. All `logEvent`, `wrapLLMCall`,
+     * `callTool`, `withSpan`, etc. invocations inside `fn` will use the given
+     * (or freshly generated) traceId, even when called concurrently from a
+     * shared client instance.
+     *
+     * @example
+     *   app.post('/run', async (req, res) => {
+     *     await gov.withTrace(async () => {
+     *       await runAgent(req.body);
+     *     });
+     *   });
+     */
+    withTrace<T>(fn: () => T | Promise<T>, traceId?: string): T | Promise<T> {
+        return this.traceStorage.run(
+            { traceId: traceId ?? randomUUID() },
+            () => this.spanManager.runInIsolatedStack(fn),
         );
     }
 
@@ -251,7 +348,17 @@ export class GovernanceClient {
                         reason: `Approval ${decision}`,
                         ticketId,
                     });
-                    throw new PolicyDeniedError(toolName, `Approval ${decision} (ticket: ${ticketId})`);
+                    const kind: PolicyDenialKind =
+                        decision === 'DENIED' ? 'APPROVAL_DENIED'
+                            : decision === 'EXPIRED' ? 'APPROVAL_EXPIRED'
+                                : decision === 'TIMEOUT' ? 'APPROVAL_TIMEOUT'
+                                    : 'UNKNOWN';
+                    throw new PolicyDeniedError(
+                        toolName,
+                        `Approval ${decision}`,
+                        ticketId || undefined,
+                        kind,
+                    );
                 }
             }
         }
@@ -390,6 +497,7 @@ export class GovernanceClient {
     }
 
     async shutdown(): Promise<void> {
+        this.uninstallExitHandlers();
         await this.buffer.shutdown();
     }
 

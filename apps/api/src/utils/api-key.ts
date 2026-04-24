@@ -1,7 +1,19 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { env } from '../config/env.js';
 
 export const AGENT_API_KEY_PREFIX = 'agtos_';
+
+/**
+ * Read the pepper used to derive API key hashes. Read lazily from the
+ * environment so this module can be imported in pure unit tests without
+ * triggering env validation. Validated by env.ts at app startup.
+ */
+function getPepper(): string {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.length < 32) {
+        throw new Error('JWT_SECRET is required to derive agent API key hashes');
+    }
+    return secret;
+}
 
 /**
  * Generate a fresh agent API key. Returns the plaintext (shown once to the
@@ -21,7 +33,7 @@ export function generateAgentApiKey(): { apiKey: string; hash: string; hint: str
 }
 
 export function hashAgentApiKey(apiKey: string): string {
-    return createHmac('sha256', env.JWT_SECRET).update(apiKey).digest('hex');
+    return createHmac('sha256', getPepper()).update(apiKey).digest('hex');
 }
 
 export function looksLikeAgentApiKey(token: string): boolean {
