@@ -100,6 +100,10 @@ Optional framework adapters provide zero-config integration:
 - `@agentos/governance-sdk/adapters/openai` — wraps OpenAI's `chat.completions.create`
 - `@agentos/governance-sdk/adapters/langchain` — provides a LangChain callback handler
 
+#### Migrating from SDK v1
+
+> **Breaking change.** SDK v2 removes the provider-specific `gov.createMessage(...)` helper that wrapped Anthropic's `messages.create`. Replace it with the provider-agnostic `gov.wrapLLMCall(fn, metadata)` (or the matching adapter, e.g. `createAnthropicAdapter(client, gov).messages.create(...)`). `wrapLLMCall` accepts any async function and tracks tokens/cost/latency uniformly across Anthropic, OpenAI, Ollama, and custom HTTP models. Policy enforcement also moved earlier in the lifecycle — wrap side-effectful actions in `gov.callTool(name, inputs, fn, { riskScore })` so the platform can DENY/REQUIRE_APPROVAL **before** the action runs, and catch denials with `isPolicyDeniedError(err)` instead of pattern-matching the error message. See `apps/api/src/showcase-agents/` for full v2 examples (Anthropic adapter, raw `wrapLLMCall` with Ollama, and a multi-provider workflow).
+
 ### 4. Policy Engine (with Pre-Execution Gating)
 
 Policies are rules that govern what agents can and cannot do. In SDK v2, policies are checked **before** a tool executes — not just at approval time. Each policy contains rules that match on two things:

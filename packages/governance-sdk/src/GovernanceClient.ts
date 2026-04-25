@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventBuffer } from './EventBuffer.js';
 import { SpanManager } from './SpanManager.js';
-import { CircuitBreaker } from './CircuitBreaker.js';
+import { CircuitBreakerRegistry, routeKeyFromUrl } from './CircuitBreaker.js';
 
 interface TraceContext {
     traceId: string;
@@ -24,9 +24,19 @@ export interface BudgetConfig {
 
 export interface ResilienceConfig {
     onPlatformUnavailable?: 'fail-open' | 'fail-closed';
+    /** Total fetch attempts including the first one. Default: 1 (no retry). */
     retryAttempts?: number;
+    /**
+     * Base delay (ms) for exponential backoff between retries. Actual wait is
+     * `random(0, min(retryMaxMs, retryDelayMs * 2^attempt))` — full jitter.
+     * Default: 1000.
+     */
     retryDelayMs?: number;
+    /** Cap on per-retry backoff window. Default: 30_000. */
+    retryMaxMs?: number;
+    /** Failures before the per-route breaker opens. Default: 5. */
     circuitBreakerThreshold?: number;
+    /** How long the breaker stays open before allowing a probe. Default: 30s. */
     circuitBreakerCooldownMs?: number;
 }
 
@@ -54,6 +64,14 @@ export interface GovernanceClientConfig {
      * Set to false if you manage shutdown explicitly.
      */
     autoShutdown?: boolean;
+    /**
+     * How long the SDK waits for an SSE-pushed approval resolution before
+     * falling back to HTTP polling. The previous 10s default kept agents
+     * blocked needlessly when the SSE handshake silently failed (e.g. proxy
+     * dropped the connection); 2.5s is a tight ceiling that still rides the
+     * happy path while degrading fast. Default: 2_500.
+     */
+    sseConnectTimeoutMs?: number;
 }
 
 export type PolicyDenialKind = 'POLICY' | 'APPROVAL_DENIED' | 'APPROVAL_EXPIRED' | 'APPROVAL_TIMEOUT' | 'UNKNOWN';
@@ -147,9 +165,10 @@ export class GovernanceClient {
     private readonly apiKey: string;
     private readonly buffer: EventBuffer;
     private readonly spanManager: SpanManager;
-    private readonly circuitBreaker: CircuitBreaker;
+    private readonly breakers: CircuitBreakerRegistry;
     private readonly budgetConfig?: BudgetConfig;
     private readonly resilienceConfig: ResilienceConfig;
+    private readonly sseConnectTimeoutMs: number;
     private readonly traceStorage = new AsyncLocalStorage<TraceContext>();
     private readonly defaultTraceId: string;
     private cumulativeCostUsd = 0;
@@ -167,8 +186,9 @@ export class GovernanceClient {
         this.defaultTraceId = randomUUID();
         this.budgetConfig = config.budget;
         this.resilienceConfig = config.resilience ?? {};
+        this.sseConnectTimeoutMs = config.sseConnectTimeoutMs ?? 2_500;
         this.spanManager = new SpanManager();
-        this.circuitBreaker = new CircuitBreaker(
+        this.breakers = new CircuitBreakerRegistry(
             config.resilience?.circuitBreakerThreshold ?? 5,
             config.resilience?.circuitBreakerCooldownMs ?? 30_000,
         );
@@ -243,6 +263,17 @@ export class GovernanceClient {
         );
     }
 
+    /**
+     * Enqueue an arbitrary audit event. Use this for one-off signals the
+     * higher-level helpers (`wrapLLMCall`, `callTool`, `withSpan`) don't
+     * already cover — e.g. business events, custom action types, or
+     * external system handoffs.
+     *
+     * The call is non-blocking: the event is appended to the in-memory
+     * `EventBuffer` and flushed on the next batch boundary or interval.
+     * `agentId`, `traceId`, `spanId`, and `parentSpanId` are stamped
+     * automatically from ambient context so callers don't repeat themselves.
+     */
     logEvent(payload: Record<string, unknown>): void {
         this.buffer.push({
             agentId: this.agentId,
@@ -253,6 +284,29 @@ export class GovernanceClient {
         });
     }
 
+    /**
+     * Wrap any async LLM call so the SDK records tokens, cost, latency,
+     * and success/failure as a single `llm_call` audit event. `metadata`
+     * may be a static object or a function called with the resolved result
+     * (use the latter when token counts are only known after the call).
+     *
+     * Throws `BudgetExceededError` (synchronously, before `fn` runs) when
+     * the client-side budget cap has been hit and `BudgetConfig.onBudgetExceeded`
+     * is `'throw'` (the default). Errors from `fn` are re-thrown unchanged
+     * after a failure event is logged.
+     *
+     * @example
+     *   const msg = await gov.wrapLLMCall(
+     *     () => anthropic.messages.create({ model, ... }),
+     *     (result) => ({
+     *       provider: 'anthropic',
+     *       model,
+     *       inputTokens: result.usage.input_tokens,
+     *       outputTokens: result.usage.output_tokens,
+     *       costUsd: estimateCost(result),
+     *     }),
+     *   );
+     */
     async wrapLLMCall<T>(
         fn: () => Promise<T>,
         metadata: LLMCallMetadata | ((result: T) => LLMCallMetadata),
@@ -361,6 +415,34 @@ export class GovernanceClient {
         };
     }
 
+    /**
+     * Run `fn` as a governed tool invocation.
+     *
+     * The lifecycle is:
+     *   1. If `options.riskScore` is provided (and `skipPolicyCheck` is not),
+     *      consult `/policies/check`. A `DENY` rejects with `PolicyDeniedError`;
+     *      a `REQUIRE_APPROVAL` opens an approval ticket and blocks until the
+     *      ticket resolves (push via SSE, fall back to polling).
+     *   2. On approval (or when no policy gate applies), `fn` is invoked.
+     *   3. Success/failure is recorded as a `tool_call` audit event with
+     *      `inputs`, latency, and any error message. The original error from
+     *      `fn` is re-thrown unchanged.
+     *
+     * `inputs` is captured into the audit log verbatim — strip secrets *before*
+     * passing them in. Use `options.approvalParams` to override the reasoning
+     * shown to human reviewers (defaults to a generic message).
+     *
+     * @example
+     *   await gov.callTool(
+     *     'send_email',
+     *     { to, subject, body },
+     *     () => emailClient.send({ to, subject, body }),
+     *     { riskScore: 0.6, approvalParams: { reasoning: 'Cold outreach to lead' } },
+     *   );
+     *
+     * @throws PolicyDeniedError when policy denies or a human/approval lifecycle blocks the action.
+     * @throws ApprovalRequestError when the approval API itself is unreachable or misconfigured.
+     */
     async callTool<T>(
         toolName: string,
         inputs: Record<string, unknown>,
@@ -571,6 +653,22 @@ export class GovernanceClient {
         }
     }
 
+    /**
+     * Ask the platform what should happen for `actionType` at the given
+     * `riskScore`. Returns `{ effect, reason }` where `effect` is one of
+     * `'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL'`.
+     *
+     * This call is **resilient by design** and never throws:
+     *   - On non-2xx responses (other than 4xx contract errors) it returns
+     *     `REQUIRE_APPROVAL` so callers fail closed when the platform is in
+     *     a degraded state.
+     *   - On transport failures the result depends on `ResilienceConfig.onPlatformUnavailable`:
+     *     `'fail-open'` returns `ALLOW`; the default fail-closed returns
+     *     `REQUIRE_APPROVAL` (safer for production).
+     *
+     * Most callers should use `callTool` instead — it wires `checkPolicy` +
+     * `requestApproval` + tool execution + audit logging together.
+     */
     async checkPolicy(
         actionType: string,
         riskScore: number,
@@ -606,10 +704,16 @@ export class GovernanceClient {
         }
     }
 
+    /**
+     * Manually open a span. Prefer `withSpan(name, fn)` — it pairs the
+     * `startSpan`/`endSpan` for you and tags failures automatically.
+     * Returns the new span id so callers can correlate it externally.
+     */
     startSpan(name: string): string {
         return this.spanManager.startSpan(name);
     }
 
+    /** Close the most recently opened span. Pairs with `startSpan`. */
     endSpan(): void {
         this.spanManager.endSpan();
     }
@@ -643,10 +747,57 @@ export class GovernanceClient {
         }
     }
 
+    /**
+     * Cumulative cost (USD) tracked by `wrapLLMCall` and `wrapLLMStream`
+     * for the lifetime of this client instance. Resets only when a new
+     * client is constructed. Use `getMetrics()` for a richer snapshot.
+     */
     get currentCost(): number {
         return this.cumulativeCostUsd;
     }
 
+    /**
+     * Snapshot of the SDK's runtime state. Intended for `/healthz` endpoints,
+     * Prometheus exporters, or ad-hoc debugging — *not* something to poll on
+     * a hot path. Cheap (no I/O), lock-free, and never throws.
+     *
+     * Fields:
+     *   - `cost.cumulativeUsd` — total spend tracked by `wrapLLMCall`/`wrapLLMStream`
+     *     since process start.
+     *   - `cost.budgetUsd` — configured `BudgetConfig.maxCostUsd` if any.
+     *   - `buffer.pending` — events queued but not yet flushed.
+     *   - `buffer.dropped` — events lost due to overflow or repeated flush failures.
+     *   - `breakers` — per-route circuit-breaker state (open/closed, failure count).
+     *   - `traceId` — the active traceId in scope (per-trace inside `withTrace`).
+     */
+    getMetrics(): {
+        cost: { cumulativeUsd: number; budgetUsd: number | null };
+        buffer: { pending: number; dropped: number };
+        breakers: Record<string, { failures: number; openedAt: number | null; isOpen: boolean }>;
+        traceId: string;
+    } {
+        return {
+            cost: {
+                cumulativeUsd: this.cumulativeCostUsd,
+                budgetUsd: this.budgetConfig?.maxCostUsd ?? null,
+            },
+            buffer: {
+                pending: this.buffer.pending,
+                dropped: this.buffer.dropped,
+            },
+            breakers: this.breakers.snapshot(),
+            traceId: this.traceId,
+        };
+    }
+
+    /**
+     * Best-effort flush of buffered events and removal of process exit
+     * handlers. Safe to call multiple times. Long-running processes
+     * generally don't need to call this manually — `autoShutdown` (default
+     * `true`) wires it to `beforeExit`/`SIGINT`/`SIGTERM`. Tests and
+     * short-lived scripts should `await gov.shutdown()` to make sure their
+     * final batch is delivered before the process exits.
+     */
     async shutdown(): Promise<void> {
         this.uninstallExitHandlers();
         await this.buffer.shutdown();
@@ -682,48 +833,53 @@ export class GovernanceClient {
         return this.pollForApproval(ticketId, pollInterval, maxWait);
     }
 
-    private waitForApprovalViaSSE(
+    private async waitForApprovalViaSSE(
         ticketId: string,
         sseToken: string,
         maxWait: number,
     ): Promise<{ decision: string; ticketId: string } | null> {
+        const Ctor = await getEventSourceCtor();
+        if (!Ctor) {
+            // No EventSource and no `eventsource` polyfill installed —
+            // signal a fallback to polling. Warning is emitted once by
+            // `getEventSourceCtor` itself.
+            return null;
+        }
+
         return new Promise((resolve) => {
+            // Cap the SSE attempt at the configured connect timeout (default 2.5s)
+            // so we fall back to polling quickly when the upgrade is silently
+            // dropped (load balancers, corporate proxies, etc.). The full
+            // approval wait still uses `maxWait` via `pollForApproval`.
             const timeout = setTimeout(() => {
                 resolve(null);
-            }, Math.min(maxWait, 10_000)); // SSE attempt limited to 10s before falling back
+            }, Math.min(maxWait, this.sseConnectTimeoutMs));
 
             try {
                 const url = `${this.platformUrl}/api/v1/events/agent-stream?token=${sseToken}&ticketId=${ticketId}`;
-
-                // Use EventSource if available (browser/modern Node), otherwise fall back
-                if (typeof EventSource !== 'undefined') {
-                    const es = new EventSource(url);
-                    es.onmessage = (event: MessageEvent) => {
-                        try {
-                            const data = JSON.parse(event.data as string) as Record<string, unknown>;
-                            if (
-                                data['type'] === 'approval.resolved' &&
-                                (data['payload'] as Record<string, unknown>)?.['ticketId'] === ticketId
-                            ) {
-                                clearTimeout(timeout);
-                                es.close();
-                                const payload = data['payload'] as Record<string, unknown>;
-                                resolve({
-                                    decision: payload['decision'] as string,
-                                    ticketId,
-                                });
-                            }
-                        } catch { /* ignore parse errors */ }
-                    };
-                    es.onerror = () => {
-                        clearTimeout(timeout);
-                        es.close();
-                        resolve(null);
-                    };
-                } else {
+                const es = new Ctor(url);
+                es.onmessage = (event: MessageEvent) => {
+                    try {
+                        const data = JSON.parse(event.data as string) as Record<string, unknown>;
+                        if (
+                            data['type'] === 'approval.resolved' &&
+                            (data['payload'] as Record<string, unknown>)?.['ticketId'] === ticketId
+                        ) {
+                            clearTimeout(timeout);
+                            es.close();
+                            const payload = data['payload'] as Record<string, unknown>;
+                            resolve({
+                                decision: payload['decision'] as string,
+                                ticketId,
+                            });
+                        }
+                    } catch { /* ignore parse errors */ }
+                };
+                es.onerror = () => {
                     clearTimeout(timeout);
+                    es.close();
                     resolve(null);
-                }
+                };
             } catch {
                 clearTimeout(timeout);
                 resolve(null);
@@ -805,24 +961,39 @@ export class GovernanceClient {
         url: string,
         init?: RequestInit,
     ): Promise<Response> {
-        if (!this.circuitBreaker.canRequest()) {
-            throw new Error('Circuit breaker open — platform unavailable');
+        const routeKey = routeKeyFromUrl(url);
+        const breaker = this.breakers.get(routeKey);
+
+        if (!breaker.canRequest()) {
+            throw new Error(`Circuit breaker open for route "${routeKey}" — platform unavailable`);
         }
 
         const attempts = this.resilienceConfig.retryAttempts ?? 1;
-        const delay = this.resilienceConfig.retryDelayMs ?? 1000;
+        const baseMs = this.resilienceConfig.retryDelayMs ?? 1000;
+        const maxMs = this.resilienceConfig.retryMaxMs ?? 30_000;
         let lastError: Error | undefined;
 
         for (let i = 0; i < attempts; i++) {
             try {
                 const res = await fetch(url, init);
-                this.circuitBreaker.recordSuccess();
+                // 5xx is a server-side failure: count it against the breaker
+                // even though we got a Response, otherwise repeated 500s never
+                // open the circuit and we'd retry indefinitely.
+                if (res.status >= 500) {
+                    breaker.recordFailure();
+                    if (i < attempts - 1) {
+                        await new Promise((r) => setTimeout(r, computeBackoffMs(i, baseMs, maxMs)));
+                        continue;
+                    }
+                    return res;
+                }
+                breaker.recordSuccess();
                 return res;
             } catch (err) {
                 lastError = err instanceof Error ? err : new Error(String(err));
-                this.circuitBreaker.recordFailure();
+                breaker.recordFailure();
                 if (i < attempts - 1) {
-                    await new Promise((r) => setTimeout(r, delay * (i + 1)));
+                    await new Promise((r) => setTimeout(r, computeBackoffMs(i, baseMs, maxMs)));
                 }
             }
         }
@@ -854,4 +1025,63 @@ export class GovernanceClient {
             console.warn(`[GovernanceClient] Budget warning: $${this.cumulativeCostUsd.toFixed(6)} / $${this.budgetConfig.maxCostUsd.toFixed(6)}`);
         }
     }
+}
+
+/**
+ * Full-jitter exponential backoff: a random wait in `[0, min(cap, base * 2^attempt)]`.
+ * Recommended in the AWS Architecture Blog "Exponential Backoff And Jitter"
+ * post — pure exponential creates retry storms when many clients trip
+ * simultaneously, full jitter de-correlates them.
+ */
+function computeBackoffMs(attempt: number, baseMs: number, capMs: number): number {
+    const exp = Math.min(capMs, baseMs * 2 ** attempt);
+    return Math.floor(Math.random() * exp);
+}
+
+// EventSource is built into browsers and Node ≥18, but older runtimes (and a
+// few hosted Node environments) ship without it. Resolve a usable ctor once,
+// preferring the global, then falling back to the optional `eventsource`
+// peer dep. A single warning is emitted when neither is found so callers can
+// `npm i eventsource` without paying for it on every approval wait.
+type EventSourceCtor = new (url: string) => {
+    onmessage: ((ev: MessageEvent) => void) | null;
+    onerror: ((ev: Event) => void) | null;
+    close(): void;
+};
+
+let cachedEventSourceCtor: EventSourceCtor | null | undefined;
+let warnedAboutMissingEventSource = false;
+
+async function getEventSourceCtor(): Promise<EventSourceCtor | null> {
+    if (cachedEventSourceCtor !== undefined) return cachedEventSourceCtor;
+
+    const globalES = (globalThis as { EventSource?: EventSourceCtor }).EventSource;
+    if (globalES) {
+        cachedEventSourceCtor = globalES;
+        return cachedEventSourceCtor;
+    }
+
+    try {
+        // Avoid bundlers statically resolving the optional dep.
+        const moduleName = 'eventsource';
+        const mod = (await import(/* @vite-ignore */ moduleName)) as
+            | { default?: EventSourceCtor; EventSource?: EventSourceCtor }
+            | EventSourceCtor;
+        const ctor =
+            (mod as { default?: EventSourceCtor }).default
+            ?? (mod as { EventSource?: EventSourceCtor }).EventSource
+            ?? (mod as EventSourceCtor);
+        cachedEventSourceCtor = ctor ?? null;
+    } catch {
+        cachedEventSourceCtor = null;
+    }
+
+    if (!cachedEventSourceCtor && !warnedAboutMissingEventSource) {
+        warnedAboutMissingEventSource = true;
+        console.warn(
+            '[GovernanceClient] No EventSource available — install the `eventsource` package for push-based approvals, otherwise the SDK will fall back to HTTP polling.',
+        );
+    }
+
+    return cachedEventSourceCtor;
 }

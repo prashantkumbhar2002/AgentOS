@@ -8,6 +8,7 @@ import {
     isApprovalRequestError,
 } from './GovernanceClient.js';
 import { EventBuffer } from './EventBuffer.js';
+import { CircuitBreaker, CircuitBreakerRegistry, routeKeyFromUrl } from './CircuitBreaker.js';
 
 const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -664,5 +665,176 @@ describe('EventBuffer resilience', () => {
 
         expect(buf.pending).toBe(3);
         expect(buf.dropped).toBe(2);
+    });
+});
+
+describe('withSpan failure tagging (#23)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+        vi.spyOn(console, 'warn').mockImplementation(() => { });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('emits a span_failed event with span name in metadata when fn rejects', async () => {
+        const client = createClient();
+        const logged: Record<string, unknown>[] = [];
+        const realLog = client.logEvent.bind(client);
+        vi.spyOn(client, 'logEvent').mockImplementation((p: Record<string, unknown>) => {
+            logged.push(p);
+            realLog(p);
+        });
+
+        await expect(
+            client.withSpan('checkout', async () => {
+                throw new Error('payment declined');
+            }),
+        ).rejects.toThrow('payment declined');
+
+        const failure = logged.find((e) => e.event === 'span_failed');
+        expect(failure).toBeDefined();
+        expect(failure?.success).toBe(false);
+        expect(failure?.errorMsg).toBe('payment declined');
+        expect((failure?.metadata as { spanName?: unknown })?.spanName).toBe('checkout');
+        expect(typeof failure?.latencyMs).toBe('number');
+
+        await client.shutdown();
+    });
+
+    it('does NOT emit span_failed on success', async () => {
+        const client = createClient();
+        const logged: Record<string, unknown>[] = [];
+        vi.spyOn(client, 'logEvent').mockImplementation((p: Record<string, unknown>) => {
+            logged.push(p);
+        });
+
+        const result = await client.withSpan('happy', async () => 'ok');
+        expect(result).toBe('ok');
+        expect(logged.find((e) => e.event === 'span_failed')).toBeUndefined();
+    });
+
+    it('still pops the span stack when fn rejects', async () => {
+        const client = createClient();
+        const before = client['spanManager'].depth;
+
+        await expect(
+            client.withSpan('boom', async () => { throw new Error('x'); }),
+        ).rejects.toThrow();
+
+        expect(client['spanManager'].depth).toBe(before);
+    });
+});
+
+describe('CircuitBreaker (per-route) and backoff (#13)', () => {
+    it('routeKeyFromUrl buckets by host + first /api/vN segment', () => {
+        expect(routeKeyFromUrl('https://api.x/api/v1/audit/batch')).toBe('api.x|audit');
+        expect(routeKeyFromUrl('https://api.x/api/v1/audit/log')).toBe('api.x|audit');
+        expect(routeKeyFromUrl('https://api.x/api/v2/policies/check')).toBe('api.x|policies');
+        expect(routeKeyFromUrl('https://api.x/api/v1/approvals/abc-123')).toBe('api.x|approvals');
+        expect(routeKeyFromUrl('not-a-url')).toBe('unknown');
+    });
+
+    it('CircuitBreakerRegistry returns the same breaker for repeated keys', () => {
+        const reg = new CircuitBreakerRegistry(2, 1000);
+        const a = reg.get('host|audit');
+        const b = reg.get('host|audit');
+        expect(a).toBe(b);
+        const c = reg.get('host|policies');
+        expect(c).not.toBe(a);
+    });
+
+    it('opens after threshold, refuses requests, and recovers after cooldown', async () => {
+        const cb = new CircuitBreaker(2, 30);
+        expect(cb.canRequest()).toBe(true);
+        cb.recordFailure();
+        expect(cb.canRequest()).toBe(true);
+        cb.recordFailure();
+        expect(cb.canRequest()).toBe(false);
+        expect(cb.isOpen).toBe(true);
+
+        await new Promise((r) => setTimeout(r, 35));
+        expect(cb.canRequest()).toBe(true);
+        expect(cb.isOpen).toBe(false);
+    });
+
+    it('a flaky route does not trip the breaker on a healthy route', async () => {
+        const client = createClient({
+            resilience: {
+                circuitBreakerThreshold: 2,
+                circuitBreakerCooldownMs: 1_000,
+                retryAttempts: 1,
+            },
+        });
+
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (url: string) => {
+                if (url.includes('/audit/')) throw new Error('audit down');
+                return { ok: true, status: 200, json: async () => ({}) };
+            }),
+        );
+
+        // Trip the audit breaker
+        await expect(
+            client['fetchWithResilience']('http://localhost:3000/api/v1/audit/batch'),
+        ).rejects.toThrow();
+        await expect(
+            client['fetchWithResilience']('http://localhost:3000/api/v1/audit/batch'),
+        ).rejects.toThrow();
+
+        // Audit should now be tripped
+        await expect(
+            client['fetchWithResilience']('http://localhost:3000/api/v1/audit/batch'),
+        ).rejects.toThrow(/Circuit breaker open/);
+
+        // Policies route is unaffected
+        const res = await client['fetchWithResilience'](
+            'http://localhost:3000/api/v1/policies/check',
+        );
+        expect(res.ok).toBe(true);
+
+        const metrics = client.getMetrics();
+        expect(metrics.breakers['localhost:3000|audit']?.isOpen).toBe(true);
+        expect(metrics.breakers['localhost:3000|policies']?.isOpen ?? false).toBe(false);
+
+        await client.shutdown();
+    });
+
+    it('counts 5xx responses as breaker failures', async () => {
+        const client = createClient({
+            resilience: { circuitBreakerThreshold: 1, retryAttempts: 1 },
+        });
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })),
+        );
+
+        const res = await client['fetchWithResilience']('http://localhost:3000/api/v1/audit/batch');
+        expect(res.status).toBe(503);
+
+        const metrics = client.getMetrics();
+        expect(metrics.breakers['localhost:3000|audit']?.isOpen).toBe(true);
+
+        await client.shutdown();
+    });
+});
+
+describe('getMetrics() (#21)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    it('returns a snapshot of cost, buffer, breakers, and traceId', () => {
+        const client = createClient({ budget: { maxCostUsd: 5 } });
+        client.logEvent({ event: 'tool_call' });
+        const m = client.getMetrics();
+        expect(m.cost).toEqual({ cumulativeUsd: 0, budgetUsd: 5 });
+        expect(m.buffer.pending).toBeGreaterThanOrEqual(1);
+        expect(m.buffer.dropped).toBe(0);
+        expect(typeof m.traceId).toBe('string');
+        expect(m.breakers).toEqual({});
     });
 });
