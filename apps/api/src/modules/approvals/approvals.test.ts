@@ -175,18 +175,21 @@ describe('POST /api/v1/approvals', () => {
       .send({ agentId: testAgentId });
 
     expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error', 'Validation failed');
+    expect(res.body.error).toBe('VALIDATION_ERROR');
     expect(res.body).toHaveProperty('details');
   });
 
-  it('returns 400 for non-existent agentId', async () => {
+  it('returns 404 for non-existent agentId', async () => {
+    // Behavior change: was 400, now 404 NOT_FOUND. The agentId is well-formed; the
+    // referenced resource just doesn't exist — 404 is the correct REST semantic.
     const res = await agent
       .post('/api/v1/approvals')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(validApprovalPayload({ agentId: '00000000-0000-0000-0000-000000000000' }));
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Agent not found');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Agent' });
   });
 
   it('returns 400 when riskScore is out of range', async () => {
@@ -196,7 +199,7 @@ describe('POST /api/v1/approvals', () => {
       .send(validApprovalPayload({ riskScore: 1.5 }));
 
     expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error', 'Validation failed');
+    expect(res.body.error).toBe('VALIDATION_ERROR');
   });
 
   it('returns 401 without auth token', async () => {
@@ -233,7 +236,8 @@ describe('GET /api/v1/approvals/:id', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
-    expect(res.body.error).toBe('Ticket not found');
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Ticket' });
   });
 
   it('returns expired ticket with EXPIRED status (not 404)', async () => {
@@ -297,10 +301,13 @@ describe('PATCH /api/v1/approvals/:id/decide', () => {
       .send({ decision: 'APPROVED' });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.body.error).toBe('FORBIDDEN');
+    expect(res.body.message).toMatch(/insufficient permissions/i);
   });
 
-  it('returns 400 for expired ticket', async () => {
+  it('returns 409 for expired ticket', async () => {
+    // Behavior change: was 400, now 409 CONFLICT. The ticket is in a state that
+    // conflicts with the decide operation — 409 is the correct RFC 9110 §15.5.10 code.
     const ticketId = await createTicket();
 
     await app.prisma.approvalTicket.update({
@@ -313,11 +320,13 @@ describe('PATCH /api/v1/approvals/:id/decide', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ decision: 'APPROVED' });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Ticket expired');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('CONFLICT');
+    expect(res.body.message).toMatch(/expired/i);
   });
 
-  it('returns 400 for already-resolved ticket', async () => {
+  it('returns 409 for already-resolved ticket', async () => {
+    // Behavior change: was 400, now 409 CONFLICT (state-conflict, not malformed input).
     const ticketId = await createTicket();
 
     await agent
@@ -330,8 +339,9 @@ describe('PATCH /api/v1/approvals/:id/decide', () => {
       .set('Authorization', `Bearer ${approverToken}`)
       .send({ decision: 'DENIED' });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Ticket already resolved');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('CONFLICT');
+    expect(res.body.message).toMatch(/already resolved/i);
   });
 
   it('returns 404 for non-existent ticket', async () => {
@@ -341,7 +351,8 @@ describe('PATCH /api/v1/approvals/:id/decide', () => {
       .send({ decision: 'APPROVED' });
 
     expect(res.status).toBe(404);
-    expect(res.body.error).toBe('Ticket not found');
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Ticket' });
   });
 
   it('returns 400 on invalid decision value', async () => {
@@ -353,7 +364,7 @@ describe('PATCH /api/v1/approvals/:id/decide', () => {
       .send({ decision: 'MAYBE' });
 
     expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error', 'Validation failed');
+    expect(res.body.error).toBe('VALIDATION_ERROR');
   });
 });
 

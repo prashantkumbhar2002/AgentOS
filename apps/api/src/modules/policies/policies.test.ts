@@ -152,7 +152,9 @@ describe('POST /api/v1/policies', () => {
     createdPolicyIds.push(res.body.id);
   });
 
-  it('returns 400 for duplicate policy name', async () => {
+  it('returns 409 for duplicate policy name', async () => {
+    // Behavior change: was 400, now 409 CONFLICT — duplicate-name is a uniqueness
+    // conflict against existing state, not malformed input.
     const name = uniqueName('dup-test');
     await createTestPolicy({ name });
 
@@ -161,8 +163,9 @@ describe('POST /api/v1/policies', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name, description: 'Duplicate', rules: [] });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Policy name already exists');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('CONFLICT');
+    expect(res.body.message).toMatch(/already exists/i);
   });
 
   it('returns 403 for non-admin user', async () => {
@@ -245,7 +248,8 @@ describe('GET /api/v1/policies/:id', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
-    expect(res.body.error).toBe('Policy not found');
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Policy' });
   });
 });
 
@@ -290,7 +294,9 @@ describe('DELETE /api/v1/policies/:id', () => {
     expect(res.body).toEqual({ id, deleted: true });
   });
 
-  it('returns 400 when deleting assigned policy', async () => {
+  it('returns 409 when deleting assigned policy', async () => {
+    // Behavior change: was 400, now 409 CONFLICT — deletion conflicts with current
+    // assignments. Caller must unassign first.
     const id = await createTestPolicy();
 
     await agent
@@ -302,9 +308,10 @@ describe('DELETE /api/v1/policies/:id', () => {
       .delete(`/api/v1/policies/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Cannot delete policy assigned to');
-    expect(res.body.error).toContain('Unassign first');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('CONFLICT');
+    expect(res.body.message).toContain('Cannot delete policy assigned to');
+    expect(res.body.message).toContain('Unassign first');
   });
 });
 
@@ -323,7 +330,8 @@ describe('POST /api/v1/policies/:id/assign', () => {
     expect(res.body).toEqual({ policyId: id, agentId: testAgentId, assigned: true });
   });
 
-  it('returns 400 for duplicate assignment', async () => {
+  it('returns 409 for duplicate assignment', async () => {
+    // Behavior change: was 400, now 409 CONFLICT — assignment already exists.
     const id = await createTestPolicy();
 
     await agent
@@ -336,8 +344,9 @@ describe('POST /api/v1/policies/:id/assign', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ agentId: testAgentId });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Policy already assigned to this agent');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('CONFLICT');
+    expect(res.body.message).toMatch(/already assigned/i);
   });
 });
 
@@ -366,7 +375,8 @@ describe('DELETE /api/v1/policies/:id/assign/:agentId', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
-    expect(res.body.error).toBe('Assignment not found');
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Assignment' });
   });
 });
 
@@ -426,6 +436,7 @@ describe('POST /api/v1/policies/evaluate', () => {
       });
 
     expect(res.status).toBe(404);
-    expect(res.body.error).toBe('Agent not found');
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Agent' });
   });
 });

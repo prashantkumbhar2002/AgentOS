@@ -142,7 +142,7 @@ describe('POST /api/v1/agents', () => {
       .send({ name: 'Incomplete Agent' });
 
     expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error', 'Validation failed');
+    expect(res.body.error).toBe('VALIDATION_ERROR');
     expect(res.body).toHaveProperty('details');
   });
 
@@ -263,7 +263,8 @@ describe('GET /api/v1/agents/:id', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: 'Agent not found' });
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Agent' });
   });
 });
 
@@ -346,8 +347,9 @@ describe('PATCH /api/v1/agents/:id/status', () => {
       .send({ status: 'ACTIVE' });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Invalid transition');
-    expect(res.body.error).toContain('APPROVED first');
+    expect(res.body.error).toBe('INVALID_TRANSITION');
+    expect(res.body.message).toContain('Cannot transition');
+    expect(res.body.message).toContain('APPROVED first');
   });
 
   it('returns 403 for viewer attempting status change', async () => {
@@ -425,7 +427,9 @@ describe('DELETE /api/v1/agents/:id', () => {
     expect(res.body.status).toBe('DEPRECATED');
   });
 
-  it('rejects deprecating an ACTIVE agent with 400', async () => {
+  it('rejects deprecating an ACTIVE agent with 409', async () => {
+    // Behavior change: deprecating an ACTIVE agent is a state-conflict, not a malformed
+    // request — server now returns 409 CONFLICT (was 400).
     const id = await createTestAgent();
     await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${approverToken}`).send({ status: 'APPROVED' });
     await agent.patch(`/api/v1/agents/${id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'ACTIVE' });
@@ -434,8 +438,9 @@ describe('DELETE /api/v1/agents/:id', () => {
       .delete(`/api/v1/agents/${id}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Suspend it first');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('CONFLICT');
+    expect(res.body.message).toContain('Suspend it first');
   });
 
   it('returns 403 for non-admin user', async () => {

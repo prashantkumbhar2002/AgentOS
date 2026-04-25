@@ -144,7 +144,8 @@ describe('GET /api/v1/analytics/costs', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('fromDate must be before toDate');
+    expect(res.body.error).toBe('VALIDATION_ERROR');
+    expect(res.body.message).toMatch(/fromDate.*before.*toDate/);
   });
 
   it('accepts valid date range filter', async () => {

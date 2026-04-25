@@ -34,11 +34,18 @@ export const AuditBatchSchema = z.object({
 });
 export type AuditBatchInput = z.infer<typeof AuditBatchSchema>;
 
+// NOTE: do NOT use `z.coerce.boolean()` for query params — it calls `Boolean(value)`
+// internally, and `Boolean("false") === true` (any non-empty string is truthy).
+// That silently inverts `?success=false` filters. Use an explicit string mapper instead.
+const queryBool = z
+  .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+  .transform((v) => (typeof v === 'boolean' ? v : v === 'true' || v === '1'));
+
 export const AuditQuerySchema = z.object({
   agentId: z.string().uuid().optional(),
   traceId: z.string().uuid().optional(),
   event: AuditEventTypeSchema.optional(),
-  success: z.coerce.boolean().optional(),
+  success: queryBool.optional(),
   fromDate: z.coerce.date().optional(),
   toDate: z.coerce.date().optional(),
   page: z.coerce.number().int().min(1).default(1),

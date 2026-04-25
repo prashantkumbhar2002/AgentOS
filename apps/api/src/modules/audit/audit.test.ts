@@ -123,10 +123,14 @@ describe('POST /api/v1/audit/log', () => {
       .send({ event: 'invalid_event' });
 
     expect(res.status).toBe(400);
-    expect(res.body).toHaveProperty('error', 'Validation failed');
+    expect(res.body.error).toBe('VALIDATION_ERROR');
+    expect(res.body.message).toMatch(/validation/i);
   });
 
-  it('returns 400 for non-existent agentId', async () => {
+  it('returns 404 for non-existent agentId', async () => {
+    // Behavior change: previously returned 400, now 404 NOT_FOUND. Returning 404 for
+    // a missing referenced resource is the correct REST semantic — 400 is for malformed
+    // input. The agentId here is well-formed; it just doesn't refer to anything.
     const res = await agent
       .post('/api/v1/audit/log')
       .set('Authorization', `Bearer ${adminToken}`)
@@ -136,8 +140,9 @@ describe('POST /api/v1/audit/log', () => {
         traceId: randomUUID(),
       });
 
-    expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Agent not found' });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Agent' });
   });
 
   it('returns 401 without auth', async () => {
@@ -253,7 +258,8 @@ describe('GET /api/v1/audit/traces/:traceId', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: 'Trace not found' });
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Trace' });
   });
 });
 
@@ -339,6 +345,7 @@ describe('GET /api/v1/audit/stats/:agentId', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: 'Agent not found' });
+    expect(res.body.error).toBe('NOT_FOUND');
+    expect(res.body.details).toMatchObject({ resource: 'Agent' });
   });
 });
