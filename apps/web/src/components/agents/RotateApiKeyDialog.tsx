@@ -32,6 +32,7 @@ export function RotateApiKeyDialog({
 }: Props) {
   const { toast } = useToast()
   const rotate = useRotateAgentApiKey(agentId)
+  const { reset: resetRotate } = rotate
 
   const [plaintext, setPlaintext] = useState<string | null>(null)
   const [hint, setHint] = useState<string | null>(null)
@@ -42,9 +43,9 @@ export function RotateApiKeyDialog({
       setPlaintext(null)
       setHint(null)
       setCopied(false)
-      rotate.reset()
+      resetRotate()
     }
-  }, [open, rotate])
+  }, [open, resetRotate])
 
   const onConfirm = async () => {
     try {
