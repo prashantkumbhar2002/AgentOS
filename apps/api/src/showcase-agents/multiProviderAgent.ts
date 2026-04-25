@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import {
     GovernanceClient,
+    isPolicyDeniedError,
     type GovernanceClientConfig,
 } from '@agentos/governance-sdk';
 import { createAnthropicAdapter } from '@agentos/governance-sdk/adapters/anthropic';
@@ -91,7 +92,7 @@ export async function runMultiProviderAgent(
                 },
             );
         } catch (err) {
-            if (err && typeof err === 'object' && 'name' in err && err.name === 'PolicyDeniedError') {
+            if (isPolicyDeniedError(err)) {
                 status = 'DENIED';
             } else {
                 throw err;

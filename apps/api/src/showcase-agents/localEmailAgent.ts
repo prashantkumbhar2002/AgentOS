@@ -1,5 +1,6 @@
 import {
     GovernanceClient,
+    isPolicyDeniedError,
     type GovernanceClientConfig,
 } from '@agentos/governance-sdk';
 import { env } from '../config/env.js';
@@ -112,7 +113,7 @@ export async function runLocalEmailAgent(
                 },
             );
         } catch (err) {
-            if (err && typeof err === 'object' && 'name' in err && err.name === 'PolicyDeniedError') {
+            if (isPolicyDeniedError(err)) {
                 status = 'DENIED';
             } else {
                 throw err;
