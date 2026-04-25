@@ -3,6 +3,7 @@ export {
     NotFoundError,
     ValidationError,
     AuthenticationError,
+    InvalidCredentialsError,
     AuthorizationError,
     ConflictError,
     InvalidTransitionError,

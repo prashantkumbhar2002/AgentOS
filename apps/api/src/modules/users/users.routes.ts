@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { LoginSchema, RoleEnum } from '@agentos/types';
 import type { Role } from '@agentos/types';
 import { authenticate } from '../../plugins/auth.js';
-import { AuthenticationError, ValidationError } from '../../errors/index.js';
+import { InvalidCredentialsError, ValidationError } from '../../errors/index.js';
 
 export default async function usersRoutes(
     fastify: FastifyInstance,
@@ -25,13 +25,15 @@ export default async function usersRoutes(
             const { email, password } = parsed.data;
             const user = await userService.findByEmail(email);
 
+            // SECURITY: same response for "user not found" and "wrong password" so callers
+            // cannot enumerate accounts. Do NOT branch on which condition failed.
             if (!user) {
-                throw new AuthenticationError('TOKEN_INVALID');
+                throw new InvalidCredentialsError();
             }
 
             const valid = await userService.comparePassword(password, user.passwordHash);
             if (!valid) {
-                throw new AuthenticationError('TOKEN_INVALID');
+                throw new InvalidCredentialsError();
             }
 
             const role = RoleEnum.parse(user.role);

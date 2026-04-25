@@ -35,6 +35,18 @@ export class AuthenticationError extends AppError {
   }
 }
 
+/**
+ * Login credential failure. We deliberately use the same response for "user not
+ * found" and "wrong password" to prevent user enumeration. NEVER reuse
+ * AuthenticationError('TOKEN_INVALID') for credential exchange — no token is
+ * involved in /login, and "TOKEN_INVALID" misleads operators reading audit logs.
+ */
+export class InvalidCredentialsError extends AppError {
+    constructor() {
+        super('INVALID_CREDENTIALS', 'Invalid credentials', 401);
+    }
+}
+
 export class AuthorizationError extends AppError {
     constructor(requiredRole?: string) {
         super(

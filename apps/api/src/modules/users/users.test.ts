@@ -94,16 +94,20 @@ describe('POST /api/auth/login', () => {
       .send({ email: TEST_USER.email, password: 'wrongpassword123' });
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Invalid credentials' });
+    expect(res.body.error).toBe('INVALID_CREDENTIALS');
+    expect(res.body.message).toBe('Invalid credentials');
   });
 
   it('returns 401 for unknown email (same message as wrong password)', async () => {
+    // SECURITY: must return the IDENTICAL response shape & message as wrong-password
+    // to prevent account enumeration via the login endpoint.
     const res = await agent
       .post('/api/auth/login')
       .send({ email: 'nonexistent@agentos.dev', password: 'somepassword123' });
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Invalid credentials' });
+    expect(res.body.error).toBe('INVALID_CREDENTIALS');
+    expect(res.body.message).toBe('Invalid credentials');
   });
 
   it('returns 400 on validation error (missing email)', async () => {
@@ -153,19 +157,21 @@ describe('GET /api/auth/me', () => {
     const res = await agent.get('/api/auth/me');
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Unauthorized' });
+    expect(res.body.error).toBe('TOKEN_MISSING');
+    expect(res.body.message).toMatch(/authentication required/i);
   });
 
-  it('returns 401 with "Invalid token" for malformed token', async () => {
+  it('returns 401 with TOKEN_INVALID for malformed token', async () => {
     const res = await agent
       .get('/api/auth/me')
       .set('Authorization', 'Bearer not.a.valid.jwt.token');
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Invalid token' });
+    expect(res.body.error).toBe('TOKEN_INVALID');
+    expect(res.body.message).toBe('Invalid token');
   });
 
-  it('returns 401 with "Token expired" for expired token', async () => {
+  it('returns 401 with TOKEN_EXPIRED for expired token', async () => {
     const expiredToken = app.jwt.sign(
       { id: 'fake-id', email: TEST_USER.email, name: TEST_USER.name, role: TEST_USER.role as 'admin' },
       { expiresIn: '1s' },
@@ -177,7 +183,8 @@ describe('GET /api/auth/me', () => {
       .set('Authorization', `Bearer ${expiredToken}`);
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Token expired' });
+    expect(res.body.error).toBe('TOKEN_EXPIRED');
+    expect(res.body.message).toBe('Token expired');
   });
 });
 
@@ -212,7 +219,8 @@ describe('POST /api/auth/refresh', () => {
     const res = await agent.post('/api/auth/refresh');
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Unauthorized' });
+    expect(res.body.error).toBe('TOKEN_MISSING');
+    expect(res.body.message).toMatch(/authentication required/i);
   });
 });
 
