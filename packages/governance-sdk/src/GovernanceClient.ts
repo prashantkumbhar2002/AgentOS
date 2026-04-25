@@ -614,10 +614,30 @@ export class GovernanceClient {
         this.spanManager.endSpan();
     }
 
+    /**
+     * Run `fn` inside a named span. All events emitted from within `fn` are
+     * tagged with the span's id so the dashboard can render them as a tree.
+     *
+     * On rejection an extra `span_failed` audit event is emitted carrying
+     * the span name, latency, and error message — without it the trace UI
+     * has to inspect every child event to decide whether the span succeeded.
+     * The original error is always re-thrown unchanged.
+     */
     async withSpan<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        const start = Date.now();
         this.startSpan(name);
         try {
             return await fn();
+        } catch (err) {
+            const latencyMs = Date.now() - start;
+            this.logEvent({
+                event: 'span_failed',
+                latencyMs,
+                success: false,
+                errorMsg: err instanceof Error ? err.message : String(err),
+                metadata: { spanName: name },
+            });
+            throw err;
         } finally {
             this.endSpan();
         }

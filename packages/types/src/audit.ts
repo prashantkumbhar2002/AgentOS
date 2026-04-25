@@ -7,6 +7,9 @@ export const AuditEventTypeSchema = z.enum([
   'approval_resolved',
   'action_blocked',
   'action_taken',
+  // Emitted by SDK `withSpan(fn)` when `fn` rejects, so the dashboard can
+  // visually tag the span as failed without inspecting child events.
+  'span_failed',
 ]);
 export type AuditEventType = z.infer<typeof AuditEventTypeSchema>;
 

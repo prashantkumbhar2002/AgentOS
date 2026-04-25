@@ -30,7 +30,9 @@ interface TraceEvent {
   durationMs?: number | null
   success?: boolean
   error?: string | null
+  errorMsg?: string | null
   createdAt?: string | Date
+  metadata?: Record<string, unknown> | null
 }
 
 interface SpanNode {
@@ -41,6 +43,8 @@ interface SpanNode {
   totalCost: number
   totalLatency: number
   hasFailure: boolean
+  spanName: string | null
+  errorMsg: string | null
 }
 
 const NO_SPAN_KEY = "__no_span__"
@@ -60,6 +64,8 @@ function buildSpanTree(events: TraceEvent[]): SpanNode[] {
         totalCost: 0,
         totalLatency: 0,
         hasFailure: false,
+        spanName: null,
+        errorMsg: null,
       }
       groups.set(key, node)
     }
@@ -72,6 +78,17 @@ function buildSpanTree(events: TraceEvent[]): SpanNode[] {
     const l = ev.latencyMs ?? ev.durationMs
     if (typeof l === "number") node.totalLatency += l
     if (ev.success === false || ev.error != null) node.hasFailure = true
+
+    // SDK emits `span_failed` with the span name in metadata so the UI can
+    // identify the span without a dedicated DB column.
+    const eventType = ev.eventType ?? ev.event ?? ev.type
+    if (eventType === "span_failed") {
+      const meta = ev.metadata as { spanName?: unknown } | null | undefined
+      if (meta && typeof meta.spanName === "string") {
+        node.spanName = meta.spanName
+      }
+      node.errorMsg = ev.errorMsg ?? ev.error ?? node.errorMsg
+    }
   }
 
   const roots: SpanNode[] = []
@@ -146,19 +163,34 @@ function SpanNodeView({ node, depth }: { node: SpanNode; depth: number }) {
           style={{ marginLeft: indent }}
         >
           {isSpan && (
-            <div className="flex flex-wrap items-center gap-2 border-b pb-2">
-              <span className="font-mono text-[10px] text-muted-foreground">
-                span:{node.spanId!.slice(0, 8)}
-              </span>
-              <span className="text-[11px] text-muted-foreground">
-                {node.events.length} {node.events.length === 1 ? "event" : "events"}
-              </span>
-              <span className="text-[11px] text-muted-foreground">
-                Σ cost: {formatUsd(node.totalCost)}
-              </span>
-              <span className="text-[11px] text-muted-foreground">
-                Σ latency: {formatDuration(node.totalLatency)}
-              </span>
+            <div className="space-y-1 border-b pb-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {node.spanName && (
+                  <span className="text-xs font-semibold">{node.spanName}</span>
+                )}
+                {node.hasFailure && (
+                  <Badge variant="destructive" className="text-[10px]">
+                    Failed
+                  </Badge>
+                )}
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  span:{node.spanId!.slice(0, 8)}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-muted-foreground">
+                  {node.events.length} {node.events.length === 1 ? "event" : "events"}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Σ cost: {formatUsd(node.totalCost)}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Σ latency: {formatDuration(node.totalLatency)}
+                </span>
+              </div>
+              {node.errorMsg && (
+                <p className="text-[11px] text-destructive">{node.errorMsg}</p>
+              )}
             </div>
           )}
           <div className="space-y-2">
