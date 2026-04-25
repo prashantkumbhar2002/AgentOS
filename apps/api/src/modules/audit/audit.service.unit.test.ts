@@ -146,3 +146,54 @@ describe('AuditService.exportCsv', () => {
     expect(csv.split('\n').length).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('IAgentRepository.findInfoByIds (batch validation #14)', () => {
+  it('returns only existing agents in a single call', async () => {
+    const a = agentRepo.seed({ name: 'A', budgetUsd: 10 });
+    const b = agentRepo.seed({ name: 'B', budgetUsd: null });
+    const missing = '00000000-0000-0000-0000-000000000999';
+
+    const infos = await agentRepo.findInfoByIds([a.id, b.id, missing]);
+
+    expect(infos).toHaveLength(2);
+    expect(infos.find((i) => i.id === a.id)).toMatchObject({ status: 'ACTIVE', budgetUsd: 10 });
+    expect(infos.find((i) => i.id === b.id)).toMatchObject({ status: 'ACTIVE', budgetUsd: null });
+    expect(infos.find((i) => i.id === missing)).toBeUndefined();
+  });
+
+  it('returns empty for empty input', async () => {
+    expect(await agentRepo.findInfoByIds([])).toEqual([]);
+  });
+});
+
+describe('IAuditRepository.getSpendByAgentsSince (server-side budget enforcement #9)', () => {
+  it('sums cost per agent within window and excludes older entries', async () => {
+    const a = agentRepo.seed({ name: 'A' });
+    const b = agentRepo.seed({ name: 'B' });
+
+    await auditRepo.create({ agentId: a.id, traceId: 't1', event: 'llm_call', costUsd: 0.5 });
+    await auditRepo.create({ agentId: a.id, traceId: 't2', event: 'llm_call', costUsd: 0.25 });
+    await auditRepo.create({ agentId: b.id, traceId: 't3', event: 'llm_call', costUsd: 1 });
+
+    // Backdate one of A's entries to before the window — must be excluded.
+    auditRepo.store[0]!.createdAt = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const map = await auditRepo.getSpendByAgentsSince([a.id, b.id], since);
+
+    expect(map.get(a.id)).toBe(0.25);
+    expect(map.get(b.id)).toBe(1);
+  });
+
+  it('omits agents with no spend in the window', async () => {
+    const a = agentRepo.seed();
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const map = await auditRepo.getSpendByAgentsSince([a.id], since);
+    expect(map.has(a.id)).toBe(false);
+  });
+
+  it('returns empty map for empty input', async () => {
+    const since = new Date();
+    expect((await auditRepo.getSpendByAgentsSince([], since)).size).toBe(0);
+  });
+});

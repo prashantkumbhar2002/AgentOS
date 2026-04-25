@@ -1,6 +1,6 @@
 import type { PrismaClient, Prisma } from '@prisma/client';
 import type { CreateAgentInput, UpdateAgentInput, AgentListQuery } from '@agentos/types';
-import type { IAgentRepository, AgentApiPrincipal } from '../interfaces/IAgentRepository.js';
+import type { IAgentRepository, AgentApiPrincipal, AgentBatchInfo } from '../interfaces/IAgentRepository.js';
 import type { AgentDetail, AgentSummary, PaginatedResult } from '../../types/dto.js';
 
 export class PrismaAgentRepository implements IAgentRepository {
@@ -112,6 +112,7 @@ export class PrismaAgentRepository implements IAgentRepository {
         if (data.riskTier !== undefined) updateData.riskTier = data.riskTier;
         if (data.environment !== undefined) updateData.environment = data.environment;
         if (data.tags !== undefined) updateData.tags = data.tags;
+        if (data.budgetUsd !== undefined) updateData.budgetUsd = data.budgetUsd;
 
         if (data.tools !== undefined) {
             await this.prisma.agentTool.deleteMany({ where: { agentId: id } });
@@ -183,6 +184,19 @@ export class PrismaAgentRepository implements IAgentRepository {
         });
     }
 
+    async findInfoByIds(ids: string[]): Promise<AgentBatchInfo[]> {
+        if (ids.length === 0) return [];
+        const rows = await this.prisma.agent.findMany({
+            where: { id: { in: ids } },
+            select: { id: true, status: true, budgetUsd: true },
+        });
+        return rows.map((r) => ({
+            id: r.id,
+            status: r.status,
+            budgetUsd: r.budgetUsd ?? null,
+        }));
+    }
+
     private toDetail(agent: any): AgentDetail {
         return {
             id: agent.id,
@@ -195,6 +209,7 @@ export class PrismaAgentRepository implements IAgentRepository {
             status: agent.status,
             approvedBy: agent.approvedBy,
             tags: agent.tags,
+            budgetUsd: agent.budgetUsd ?? null,
             createdAt: agent.createdAt,
             updatedAt: agent.updatedAt,
             lastActiveAt: agent.lastActiveAt,

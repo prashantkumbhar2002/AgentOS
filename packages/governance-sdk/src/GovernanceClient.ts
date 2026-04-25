@@ -89,6 +89,58 @@ export class BudgetExceededError extends Error {
     }
 }
 
+/**
+ * Categorises why an approval request failed before the policy decision was
+ * reached. Lets callers distinguish a real `DENIED` from an integration
+ * issue (bad API key, rate limit, server outage).
+ */
+export type ApprovalRequestErrorKind =
+    | 'NETWORK'        // socket/dns/circuit-breaker — server never answered
+    | 'AUTH'           // 401 — bad or missing API key
+    | 'FORBIDDEN'      // 403 not caused by policy — e.g. agent scope mismatch
+    | 'NOT_FOUND'      // 404 — endpoint or agent missing
+    | 'RATE_LIMITED'   // 429 — back off and retry later
+    | 'SERVER'         // 5xx — transient server-side failure
+    | 'INVALID_RESPONSE' // 2xx with malformed body (no ticketId)
+    | 'UNKNOWN';
+
+/**
+ * Thrown by `requestApproval` (and surfaced from `callTool`) when the
+ * approval ticket could not be created because of a transport, auth, or
+ * server problem — *not* because a human/policy denied the action. Inspect
+ * `kind` to decide whether to retry, alert, or fail closed.
+ *
+ * @example
+ *   try {
+ *     await gov.callTool('charge_card', inputs, run, { riskScore: 0.9 });
+ *   } catch (err) {
+ *     if (isApprovalRequestError(err) && err.kind === 'AUTH') {
+ *       throw new Error('AgentOS API key is invalid');
+ *     }
+ *     throw err;
+ *   }
+ */
+export class ApprovalRequestError extends Error {
+    constructor(
+        public readonly kind: ApprovalRequestErrorKind,
+        public readonly httpStatus: number,
+        public readonly body: unknown,
+        message?: string,
+    ) {
+        super(message ?? `Approval request failed (${kind}, HTTP ${httpStatus})`);
+        this.name = 'ApprovalRequestError';
+    }
+}
+
+export function isApprovalRequestError(err: unknown): err is ApprovalRequestError {
+    if (err instanceof ApprovalRequestError) return true;
+    return (
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { name?: unknown }).name === 'ApprovalRequestError'
+    );
+}
+
 export class GovernanceClient {
     private readonly platformUrl: string;
     private readonly agentId: string;
@@ -333,12 +385,26 @@ export class GovernanceClient {
                     reasoning: `Tool "${toolName}" requires approval per policy`,
                 };
 
-                const { decision, ticketId } = await this.requestApproval({
-                    actionType: toolName,
-                    payload: approvalParams.payload ?? inputs,
-                    reasoning: approvalParams.reasoning,
-                    riskScore: options.riskScore,
-                });
+                let decision: string;
+                let ticketId: string;
+                try {
+                    ({ decision, ticketId } = await this.requestApproval({
+                        actionType: toolName,
+                        payload: approvalParams.payload ?? inputs,
+                        reasoning: approvalParams.reasoning,
+                        riskScore: options.riskScore,
+                    }));
+                } catch (err) {
+                    if (isApprovalRequestError(err)) {
+                        this.logEvent({
+                            event: 'action_blocked',
+                            toolName,
+                            inputs,
+                            reason: `Approval request error: ${err.kind} (HTTP ${err.httpStatus})`,
+                        });
+                    }
+                    throw err;
+                }
 
                 if (decision !== 'APPROVED' && decision !== 'AUTO_APPROVED') {
                     this.logEvent({
@@ -390,6 +456,23 @@ export class GovernanceClient {
         }
     }
 
+    /**
+     * Create an approval ticket and wait for its resolution. On success
+     * returns `{ decision, ticketId }` where `decision` is one of
+     * `AUTO_APPROVED | APPROVED | DENIED | EXPIRED | TIMEOUT`.
+     *
+     * Transport, auth, and server errors are surfaced as typed exceptions
+     * (not silently mapped to `DENIED`):
+     *   - `PolicyDeniedError` — the server's policy engine blocked the
+     *     action (HTTP 403 with code `POLICY_BLOCKED`).
+     *   - `ApprovalRequestError` — bad API key, rate limit, 5xx, malformed
+     *     response, or — when `resilience.onPlatformUnavailable !== 'fail-open'`
+     *     — a network/circuit-breaker failure. Inspect `err.kind`.
+     *
+     * When `resilience.onPlatformUnavailable === 'fail-open'`, network
+     * failures resolve to `{ decision: 'AUTO_APPROVED', ticketId: '' }` so
+     * agents keep moving during platform outages.
+     */
     async requestApproval(params: {
         actionType: string;
         payload: unknown;
@@ -401,8 +484,9 @@ export class GovernanceClient {
         const pollInterval = params.pollIntervalMs ?? 3_000;
         const maxWait = params.maxWaitMs ?? 30 * 60 * 1000;
 
+        let createRes: Response;
         try {
-            const createRes = await this.fetchWithResilience(
+            createRes = await this.fetchWithResilience(
                 `${this.platformUrl}/api/v1/approvals`,
                 {
                     method: 'POST',
@@ -419,24 +503,71 @@ export class GovernanceClient {
                     }),
                 },
             );
-
-            const createBody = (await createRes.json()) as Record<string, unknown>;
-
-            if (createBody['status'] === 'AUTO_APPROVED') {
+        } catch (err) {
+            if (this.resilienceConfig.onPlatformUnavailable === 'fail-open') {
+                console.warn('[GovernanceClient] Platform unreachable; auto-approving (fail-open):', err);
                 return { decision: 'AUTO_APPROVED', ticketId: '' };
             }
+            throw new ApprovalRequestError(
+                'NETWORK',
+                0,
+                undefined,
+                `Approval request transport error: ${err instanceof Error ? err.message : String(err)}`,
+            );
+        }
 
-            if (!createRes.ok) {
-                return { decision: 'DENIED', ticketId: '' };
+        const createBody = await this.safeJson(createRes);
+
+        if (createRes.ok) {
+            if (createBody && (createBody as Record<string, unknown>)['status'] === 'AUTO_APPROVED') {
+                return { decision: 'AUTO_APPROVED', ticketId: '' };
             }
-
-            const ticketId = createBody['ticketId'] as string;
-
-            // Try SSE-based push first, fall back to polling
+            const ticketId = createBody && (createBody as Record<string, unknown>)['ticketId'];
+            if (typeof ticketId !== 'string' || !ticketId) {
+                throw new ApprovalRequestError(
+                    'INVALID_RESPONSE',
+                    createRes.status,
+                    createBody,
+                    'Approval API returned no ticketId',
+                );
+            }
             return await this.waitForApproval(ticketId, pollInterval, maxWait);
-        } catch (err) {
-            console.warn('[GovernanceClient] requestApproval failed:', err);
-            return this.handlePlatformFailure();
+        }
+
+        // Map non-success HTTP status to a typed error.
+        const errCode =
+            createBody && typeof createBody === 'object'
+                ? (createBody as Record<string, unknown>)['error']
+                : undefined;
+
+        if (createRes.status === 403 && errCode === 'POLICY_BLOCKED') {
+            const message =
+                (createBody as Record<string, unknown> | null)?.['message'] as string | undefined
+                ?? `Action "${params.actionType}" blocked by policy`;
+            throw new PolicyDeniedError(params.actionType, message, undefined, 'POLICY');
+        }
+
+        const kind: ApprovalRequestErrorKind =
+            createRes.status === 401 ? 'AUTH'
+                : createRes.status === 403 ? 'FORBIDDEN'
+                    : createRes.status === 404 ? 'NOT_FOUND'
+                        : createRes.status === 429 ? 'RATE_LIMITED'
+                            : createRes.status >= 500 ? 'SERVER'
+                                : 'UNKNOWN';
+
+        throw new ApprovalRequestError(
+            kind,
+            createRes.status,
+            createBody,
+            `Approval request failed: HTTP ${createRes.status}`,
+        );
+    }
+
+    private async safeJson(res: Response): Promise<unknown> {
+        try {
+            return await res.json();
+        } catch {
+            return null;
         }
     }
 
@@ -613,37 +744,41 @@ export class GovernanceClient {
     }
 
     private async flushEvents(events: Record<string, unknown>[]): Promise<void> {
-        try {
-            const res = await this.fetchWithResilience(
-                `${this.platformUrl}/api/v1/audit/batch`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${this.apiKey}`,
-                    },
-                    body: JSON.stringify({ events }),
+        const res = await this.fetchWithResilience(
+            `${this.platformUrl}/api/v1/audit/batch`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${this.apiKey}`,
                 },
-            );
+                body: JSON.stringify({ events }),
+            },
+        );
 
-            if (!res.ok) {
-                // Fall back to individual logging
-                for (const event of events) {
-                    try {
-                        await fetch(`${this.platformUrl}/api/v1/audit/log`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                Authorization: `Bearer ${this.apiKey}`,
-                            },
-                            body: JSON.stringify(event),
-                        });
-                    } catch { /* swallow */ }
-                }
-            }
-        } catch {
-            console.warn('[GovernanceClient] Failed to flush events');
+        if (res.ok) return;
+
+        // 402 = server-side budget cap hit. Hard-failure — drop the batch
+        // instead of retrying individual events (each would also be rejected)
+        // and let the EventBuffer's retry policy handle nothing further.
+        if (res.status === 402) {
+            console.warn(
+                `[GovernanceClient] Audit batch rejected: server budget cap reached (HTTP 402). Dropping ${events.length} events.`,
+            );
+            return;
         }
+
+        // 4xx other than 402 — almost certainly a config issue (auth, schema).
+        // Surfacing avoids burning retries on something a retry can't fix.
+        if (res.status >= 400 && res.status < 500) {
+            const body = await this.safeJson(res);
+            throw new Error(
+                `Audit batch rejected: HTTP ${res.status} ${JSON.stringify(body) || ''}`,
+            );
+        }
+
+        // 5xx / unknown — let EventBuffer requeue with backoff.
+        throw new Error(`Audit batch flush failed: HTTP ${res.status}`);
     }
 
     private async fetchWithResilience(
@@ -673,13 +808,6 @@ export class GovernanceClient {
         }
 
         throw lastError ?? new Error('Fetch failed');
-    }
-
-    private handlePlatformFailure(): { decision: string; ticketId: string } {
-        if (this.resilienceConfig.onPlatformUnavailable === 'fail-open') {
-            return { decision: 'AUTO_APPROVED', ticketId: '' };
-        }
-        return { decision: 'ERROR', ticketId: '' };
     }
 
     private checkBudget(): void {

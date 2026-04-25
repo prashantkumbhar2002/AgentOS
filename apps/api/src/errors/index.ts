@@ -8,4 +8,5 @@ export {
     InvalidTransitionError,
     PolicyBlockedError,
     ExternalServiceError,
+    BudgetExceededError,
 } from './AppError.js';

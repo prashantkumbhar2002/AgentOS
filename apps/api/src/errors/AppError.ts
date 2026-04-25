@@ -83,3 +83,19 @@ export class ExternalServiceError extends AppError {
         );
     }
 }
+
+/**
+ * Returned by the audit ingest path when an agent's rolling spend exceeds
+ * its configured `budgetUsd`. HTTP 402 (Payment Required) tells the SDK
+ * this is a hard cap, not a transient error — retrying will not help.
+ */
+export class BudgetExceededError extends AppError {
+    constructor(agentId: string, currentUsd: number, budgetUsd: number, windowDays: number) {
+        super(
+            'BUDGET_EXCEEDED',
+            `Agent ${agentId} budget exceeded: $${currentUsd.toFixed(4)} / $${budgetUsd.toFixed(4)} (last ${windowDays}d)`,
+            402,
+            { agentId, currentUsd, budgetUsd, windowDays },
+        );
+    }
+}

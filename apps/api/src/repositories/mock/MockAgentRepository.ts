@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CreateAgentInput, UpdateAgentInput, AgentListQuery } from '@agentos/types';
-import type { IAgentRepository, AgentApiPrincipal } from '../interfaces/IAgentRepository.js';
+import type { IAgentRepository, AgentApiPrincipal, AgentBatchInfo } from '../interfaces/IAgentRepository.js';
 import type { AgentDetail, AgentSummary, PaginatedResult } from '../../types/dto.js';
 
 interface ApiKeyRecord {
@@ -67,6 +67,7 @@ export class MockAgentRepository implements IAgentRepository {
             status: 'DRAFT',
             approvedBy: null,
             tags: data.tags ?? [],
+            budgetUsd: null,
             createdAt: now,
             updatedAt: now,
             lastActiveAt: null,
@@ -91,6 +92,7 @@ export class MockAgentRepository implements IAgentRepository {
             ...(data.riskTier !== undefined ? { riskTier: data.riskTier } : {}),
             ...(data.environment !== undefined ? { environment: data.environment } : {}),
             ...(data.tags !== undefined ? { tags: data.tags } : {}),
+            ...(data.budgetUsd !== undefined ? { budgetUsd: data.budgetUsd } : {}),
             updatedAt: new Date(),
             tools: data.tools
                 ? data.tools.map((t) => ({ id: randomUUID(), name: t.name, description: t.description }))
@@ -148,6 +150,17 @@ export class MockAgentRepository implements IAgentRepository {
         }
     }
 
+    async findInfoByIds(ids: string[]): Promise<AgentBatchInfo[]> {
+        const out: AgentBatchInfo[] = [];
+        for (const id of ids) {
+            const agent = this.store.get(id);
+            if (agent) {
+                out.push({ id: agent.id, status: agent.status, budgetUsd: agent.budgetUsd });
+            }
+        }
+        return out;
+    }
+
     seed(overrides: Partial<AgentDetail> = {}): AgentDetail {
         const now = new Date();
         const agent: AgentDetail = {
@@ -161,6 +174,7 @@ export class MockAgentRepository implements IAgentRepository {
             status: 'ACTIVE',
             approvedBy: null,
             tags: [],
+            budgetUsd: null,
             createdAt: now,
             updatedAt: now,
             lastActiveAt: null,

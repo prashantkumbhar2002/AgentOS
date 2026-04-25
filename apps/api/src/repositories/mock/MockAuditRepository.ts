@@ -120,4 +120,15 @@ export class MockAuditRepository implements IAuditRepository {
     async getAgentApprovalDenyRate(_agentId: string): Promise<{ denied: number; total: number }> {
         return { denied: 0, total: 0 };
     }
+
+    async getSpendByAgentsSince(agentIds: string[], since: Date): Promise<Map<string, number>> {
+        const ids = new Set(agentIds);
+        const out = new Map<string, number>();
+        for (const e of this.store) {
+            if (!ids.has(e.agentId)) continue;
+            if (e.createdAt < since) continue;
+            out.set(e.agentId, (out.get(e.agentId) ?? 0) + (e.costUsd ?? 0));
+        }
+        return out;
+    }
 }

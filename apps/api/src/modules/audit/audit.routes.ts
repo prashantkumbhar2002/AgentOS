@@ -8,13 +8,65 @@ import {
 } from './audit.schema.js';
 import { authenticate, authenticateAgentOrUser, assertAgentScope } from '../../plugins/auth.js';
 import { calculateCost } from '../../utils/cost-calculator.js';
-import { NotFoundError, ValidationError, AuthorizationError } from '../../errors/index.js';
+import {
+    NotFoundError,
+    ValidationError,
+    AuthorizationError,
+    BudgetExceededError,
+} from '../../errors/index.js';
+
+/** Rolling window for server-side budget enforcement (last N days). */
+const BUDGET_WINDOW_DAYS = 30;
+const BUDGET_WINDOW_MS = BUDGET_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 export default async function auditRoutes(
     fastify: FastifyInstance,
 ): Promise<void> {
-    const { auditService, agentService } = fastify.services;
+    const { auditService, agentService, agentRepo, auditRepo } = fastify.services;
     const agentOrUser = authenticateAgentOrUser(fastify);
+
+    /**
+     * Reject the request if any agent's rolling spend (existing + this batch's
+     * contribution) exceeds its configured `budgetUsd`. Throws on the first
+     * violation; spend is broadcast over SSE so dashboards can react.
+     */
+    async function enforceBudgets(
+        contributions: Map<string, number>,
+        agentInfos: Map<string, { status: string; budgetUsd: number | null }>,
+    ): Promise<void> {
+        const agentsWithBudget: string[] = [];
+        for (const [id, info] of agentInfos) {
+            if (info.budgetUsd != null && info.budgetUsd > 0) {
+                agentsWithBudget.push(id);
+            }
+        }
+        if (agentsWithBudget.length === 0) return;
+
+        const since = new Date(Date.now() - BUDGET_WINDOW_MS);
+        const priorSpend = await auditRepo.getSpendByAgentsSince(agentsWithBudget, since);
+
+        for (const id of agentsWithBudget) {
+            const info = agentInfos.get(id)!;
+            const budget = info.budgetUsd!;
+            const prior = priorSpend.get(id) ?? 0;
+            const incoming = contributions.get(id) ?? 0;
+            const projected = prior + incoming;
+
+            if (projected > budget) {
+                fastify.sse.broadcast({
+                    type: 'agent.budget_exceeded',
+                    payload: {
+                        agentId: id,
+                        currentUsd: prior,
+                        projectedUsd: projected,
+                        budgetUsd: budget,
+                        windowDays: BUDGET_WINDOW_DAYS,
+                    },
+                });
+                throw new BudgetExceededError(id, projected, budget, BUDGET_WINDOW_DAYS);
+            }
+        }
+    }
 
     fastify.post(
         '/log',
@@ -39,8 +91,8 @@ export default async function auditRoutes(
 
             assertAgentScope(request, parsed.data.agentId);
 
-            const agentExists = await agentService.getAgentById(parsed.data.agentId);
-            if (!agentExists) {
+            const [info] = await agentRepo.findInfoByIds([parsed.data.agentId]);
+            if (!info) {
                 throw new NotFoundError('Agent', parsed.data.agentId);
             }
 
@@ -48,6 +100,11 @@ export default async function auditRoutes(
                 parsed.data.model ?? '',
                 parsed.data.inputTokens ?? 0,
                 parsed.data.outputTokens ?? 0,
+            );
+
+            await enforceBudgets(
+                new Map([[parsed.data.agentId, costUsd]]),
+                new Map([[info.id, { status: info.status, budgetUsd: info.budgetUsd }]]),
             );
 
             const log = await auditService.createLog(parsed.data, costUsd);
@@ -98,14 +155,17 @@ export default async function auditRoutes(
                 assertAgentScope(request, agentId);
             }
 
+            // PERF: single round-trip replaces the previous N `getAgentById` calls.
+            const infos = await agentRepo.findInfoByIds(agentIds);
+            const infoById = new Map(infos.map((i) => [i.id, i]));
             for (const agentId of agentIds) {
-                const agentExists = await agentService.getAgentById(agentId);
-                if (!agentExists) {
+                if (!infoById.has(agentId)) {
                     throw new NotFoundError('Agent', agentId);
                 }
             }
 
             let totalCostUsd = 0;
+            const contributions = new Map<string, number>();
             const logsToCreate = parsed.data.events.map((event) => {
                 const costUsd = calculateCost(
                     event.model ?? '',
@@ -113,8 +173,14 @@ export default async function auditRoutes(
                     event.outputTokens ?? 0,
                 );
                 totalCostUsd += costUsd;
+                contributions.set(event.agentId, (contributions.get(event.agentId) ?? 0) + costUsd);
                 return { ...event, costUsd };
             });
+
+            await enforceBudgets(
+                contributions,
+                new Map(infos.map((i) => [i.id, { status: i.status, budgetUsd: i.budgetUsd }])),
+            );
 
             const count = await auditService.createBatch(logsToCreate);
 

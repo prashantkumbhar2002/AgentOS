@@ -238,6 +238,16 @@ export class PrismaAuditRepository implements IAuditRepository {
         return { denied, total };
     }
 
+    async getSpendByAgentsSince(agentIds: string[], since: Date): Promise<Map<string, number>> {
+        if (agentIds.length === 0) return new Map();
+        const groups = await this.prisma.auditLog.groupBy({
+            by: ['agentId'],
+            where: { agentId: { in: agentIds }, createdAt: { gte: since } },
+            _sum: { costUsd: true },
+        });
+        return new Map(groups.map((g) => [g.agentId, g._sum.costUsd ?? 0]));
+    }
+
     private toEntry(log: any): AuditLogEntry {
         return {
             id: log.id,

@@ -43,6 +43,9 @@ export const UpdateAgentSchema = z.object({
   environment: EnvironmentSchema.optional(),
   tools: z.array(AgentToolSchema).optional(),
   tags: z.array(z.string()).optional(),
+  // Rolling 30-day USD spend limit. Server rejects audit logs when exceeded.
+  // Pass null to clear the budget.
+  budgetUsd: z.number().nonnegative().nullable().optional(),
 });
 export type UpdateAgentInput = z.infer<typeof UpdateAgentSchema>;
 

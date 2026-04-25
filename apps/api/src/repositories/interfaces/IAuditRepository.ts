@@ -13,4 +13,10 @@ export interface IAuditRepository {
     getAgentCost7d(agentId: string): Promise<number>;
     getAgentErrorAndLatency(agentId: string): Promise<{ totalRuns: number; errorCount: number; avgLatencyMs: number; costUsd7d: number }>;
     getAgentApprovalDenyRate(agentId: string): Promise<{ denied: number; total: number }>;
+    /**
+     * Sum costUsd per agent since the given timestamp. Single-query batched
+     * lookup used for budget enforcement at audit-ingest time. Agents with
+     * no spend in the window are omitted from the map.
+     */
+    getSpendByAgentsSince(agentIds: string[], since: Date): Promise<Map<string, number>>;
 }

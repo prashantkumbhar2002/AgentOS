@@ -36,6 +36,8 @@ export interface AgentDetail {
     status: string;
     approvedBy: string | null;
     tags: string[];
+    /** Rolling 30-day spend cap in USD. `null` means unlimited. */
+    budgetUsd: number | null;
     createdAt: Date;
     updatedAt: Date;
     lastActiveAt: Date | null;

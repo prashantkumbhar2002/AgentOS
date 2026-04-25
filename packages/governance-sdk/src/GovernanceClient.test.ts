@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GovernanceClient, PolicyDeniedError, BudgetExceededError, isPolicyDeniedError } from './GovernanceClient.js';
+import {
+    GovernanceClient,
+    PolicyDeniedError,
+    BudgetExceededError,
+    ApprovalRequestError,
+    isPolicyDeniedError,
+    isApprovalRequestError,
+} from './GovernanceClient.js';
 import { EventBuffer } from './EventBuffer.js';
 
 const VALID_UUID = '00000000-0000-0000-0000-000000000001';
@@ -259,6 +266,172 @@ describe('GovernanceClient', () => {
 
         expect(result.decision).toBe('AUTO_APPROVED');
         await client.shutdown();
+    });
+
+    it('requestApproval throws AUTH ApprovalRequestError on 401', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 401,
+            json: async () => ({ error: 'TOKEN_INVALID', message: 'bad key' }),
+        }));
+
+        const client = createClient();
+        await expect(
+            client.requestApproval({ actionType: 'send_email', payload: {}, reasoning: 't', riskScore: 0.5 }),
+        ).rejects.toMatchObject({
+            name: 'ApprovalRequestError',
+            kind: 'AUTH',
+            httpStatus: 401,
+        });
+        await client.shutdown();
+    });
+
+    it('requestApproval throws RATE_LIMITED ApprovalRequestError on 429', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 429,
+            json: async () => ({ error: 'RATE_LIMITED' }),
+        }));
+
+        const client = createClient();
+        await expect(
+            client.requestApproval({ actionType: 'a', payload: {}, reasoning: 't', riskScore: 0.5 }),
+        ).rejects.toMatchObject({ name: 'ApprovalRequestError', kind: 'RATE_LIMITED', httpStatus: 429 });
+        await client.shutdown();
+    });
+
+    it('requestApproval throws SERVER ApprovalRequestError on 5xx', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 503,
+            json: async () => ({ error: 'INTERNAL_ERROR' }),
+        }));
+
+        const client = createClient();
+        await expect(
+            client.requestApproval({ actionType: 'a', payload: {}, reasoning: 't', riskScore: 0.5 }),
+        ).rejects.toMatchObject({ name: 'ApprovalRequestError', kind: 'SERVER', httpStatus: 503 });
+        await client.shutdown();
+    });
+
+    it('requestApproval surfaces 403 POLICY_BLOCKED as PolicyDeniedError', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 403,
+            json: async () => ({
+                error: 'POLICY_BLOCKED',
+                message: "Action 'wire_money' blocked by policy: SOC2",
+            }),
+        }));
+
+        const client = createClient();
+        await expect(
+            client.requestApproval({ actionType: 'wire_money', payload: {}, reasoning: 't', riskScore: 0.9 }),
+        ).rejects.toMatchObject({
+            name: 'PolicyDeniedError',
+            actionType: 'wire_money',
+            kind: 'POLICY',
+        });
+        await client.shutdown();
+    });
+
+    it('requestApproval throws NETWORK ApprovalRequestError on transport failure (fail-closed)', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+
+        const client = createClient();
+        await expect(
+            client.requestApproval({ actionType: 'a', payload: {}, reasoning: 't', riskScore: 0.5 }),
+        ).rejects.toMatchObject({ name: 'ApprovalRequestError', kind: 'NETWORK', httpStatus: 0 });
+        await client.shutdown();
+    });
+
+    it('requestApproval auto-approves on transport failure when fail-open', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+
+        const client = createClient({ resilience: { onPlatformUnavailable: 'fail-open' } });
+        const result = await client.requestApproval({
+            actionType: 'a', payload: {}, reasoning: 't', riskScore: 0.5,
+        });
+
+        expect(result.decision).toBe('AUTO_APPROVED');
+        await client.shutdown();
+    });
+
+    it('requestApproval throws INVALID_RESPONSE when 2xx body has no ticketId', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            status: 201,
+            json: async () => ({}),
+        }));
+
+        const client = createClient();
+        await expect(
+            client.requestApproval({ actionType: 'a', payload: {}, reasoning: 't', riskScore: 0.5 }),
+        ).rejects.toMatchObject({ name: 'ApprovalRequestError', kind: 'INVALID_RESPONSE' });
+        await client.shutdown();
+    });
+
+    it('callTool propagates ApprovalRequestError and logs action_blocked', async () => {
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (url.includes('/policies/check')) {
+                return {
+                    ok: true,
+                    json: async () => ({ effect: 'REQUIRE_APPROVAL', reason: 'manual review' }),
+                };
+            }
+            if (url.includes('/approvals')) {
+                return {
+                    ok: false,
+                    status: 401,
+                    json: async () => ({ error: 'TOKEN_INVALID' }),
+                };
+            }
+            return { ok: true, status: 200, json: async () => ({}) };
+        }));
+
+        const client = createClient();
+        await expect(
+            client.callTool('send_email', { to: 'a' }, async () => 'sent', {
+                riskScore: 0.5,
+                approvalParams: { reasoning: 'test' },
+            }),
+        ).rejects.toMatchObject({ name: 'ApprovalRequestError', kind: 'AUTH' });
+
+        await client.shutdown();
+        const calls = (fetch as ReturnType<typeof vi.fn>).mock.calls;
+        const batchCall = calls.find((c) => (c[0] as string).includes('/audit/batch'));
+        expect(batchCall).toBeDefined();
+        const body = JSON.parse((batchCall![1] as RequestInit).body as string);
+        const blocked = body.events.find((e: { event: string }) => e.event === 'action_blocked');
+        expect(blocked).toBeDefined();
+        expect(blocked.reason).toContain('AUTH');
+    });
+
+    it('isApprovalRequestError tolerates cross-realm errors', () => {
+        expect(isApprovalRequestError(new ApprovalRequestError('AUTH', 401, null))).toBe(true);
+        expect(isApprovalRequestError({ name: 'ApprovalRequestError' })).toBe(true);
+        expect(isApprovalRequestError(new Error('boom'))).toBe(false);
+        expect(isApprovalRequestError(null)).toBe(false);
+    });
+
+    it('flushEvents drops batch silently on 402 (server budget cap)', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: false,
+            status: 402,
+            json: async () => ({ error: 'BUDGET_EXCEEDED' }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const client = createClient({ bufferMaxFlushAttempts: 5 });
+        client.logEvent({ event: 'tool_call', toolName: 'x' });
+        await client.shutdown();
+
+        // Single attempt — no retry hammering.
+        const batchCalls = fetchMock.mock.calls.filter((c) => (c[0] as string).includes('/audit/batch'));
+        expect(batchCalls.length).toBe(1);
+        // No fallback to /audit/log either.
+        const logCalls = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith('/audit/log'));
+        expect(logCalls.length).toBe(0);
     });
 
     it('checkPolicy returns policy evaluation result', async () => {
