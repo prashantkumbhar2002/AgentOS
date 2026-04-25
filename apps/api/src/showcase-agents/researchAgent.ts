@@ -119,24 +119,45 @@ export async function runResearchAgent(
             fetchResult = 'Fetch failed';
         }
 
-        // Step 4: Synthesize report
+        // Step 4: Synthesize report (streamed).
+        // The final report is the longest output (max 2048 tokens) and
+        // doesn't need post-parsing, so it's the natural place to exercise
+        // the SDK's `streamMessage` path end-to-end. Iteration MUST happen
+        // inside the `withSpan` callback so the span captures the full
+        // stream latency and `wrapLLMStream`'s onComplete fires before the
+        // span closes.
         const combinedForReport = [
             `Query 1 (${query1}):\n${searchResult1}`,
             `Query 2 (${query2}):\n${searchResult2}`,
             `Fetch summary:\n${fetchResult}`,
         ].join('\n\n');
 
-        const reportMsg = await gov.withSpan('synthesize_report', () =>
-            llm.createMessage({
+        const report = await gov.withSpan('synthesize_report', async () => {
+            const stream = llm.streamMessage({
                 model: 'claude-sonnet-4-5',
                 max_tokens: 2048,
                 system:
                     'Synthesize the following search results into a structured research report with sections: Key Findings, Details, Sources.',
                 messages: [{ role: 'user', content: combinedForReport }],
-            }),
-        );
+            });
 
-        const report = extractText(reportMsg);
+            let acc = '';
+            for await (const event of stream) {
+                if (event.type === 'content_block_delta') {
+                    // `event.delta` is a tagged union — only TextDelta carries text.
+                    const delta = (event as { delta?: { type?: string; text?: string } }).delta;
+                    if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+                        acc += delta.text;
+                        // Surface progress to stdout so devs running the demo
+                        // can visually confirm streaming is engaged. Audit
+                        // logging happens once at end of stream.
+                        process.stdout.write(delta.text);
+                    }
+                }
+            }
+            process.stdout.write('\n');
+            return acc;
+        });
 
         // Step 5: Save report with policy-gated callTool
         let status = 'APPROVED';
