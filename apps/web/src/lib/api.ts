@@ -43,6 +43,13 @@ export const authApi = {
   refresh: () => api.post<{ accessToken: string }>("/api/auth/refresh"),
 }
 
+export type AgentApiKeyResponse = {
+  agentId: string
+  apiKey: string
+  hint: string
+  warning: string
+}
+
 export const agentsApi = {
   list: (params?: Record<string, unknown>) => api.get("/api/v1/agents", { params }),
   getById: (id: string) => api.get(`/api/v1/agents/${id}`),
@@ -51,6 +58,8 @@ export const agentsApi = {
   updateStatus: (id: string, data: { status: string }) =>
     api.patch(`/api/v1/agents/${id}/status`, data),
   remove: (id: string) => api.delete(`/api/v1/agents/${id}`),
+  rotateApiKey: (id: string) =>
+    api.post<AgentApiKeyResponse>(`/api/v1/agents/${id}/api-key`),
 }
 
 export const approvalsApi = {

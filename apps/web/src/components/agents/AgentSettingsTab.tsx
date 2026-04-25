@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react"
+import { KeyRound } from "lucide-react"
 import { ConfirmDialog } from "@/components/shared"
+import { RotateApiKeyDialog } from "@/components/agents/RotateApiKeyDialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -36,6 +38,7 @@ export function AgentSettingsTab({ agent }: AgentSettingsTabProps) {
   const [llmModel, setLlmModel] = useState("claude-sonnet-4-5")
   const [tags, setTags] = useState("")
   const [confirm, setConfirm] = useState<StatusAction | null>(null)
+  const [keyDialogOpen, setKeyDialogOpen] = useState(false)
 
   useEffect(() => {
     if (!agent) return
@@ -159,6 +162,42 @@ export function AgentSettingsTab({ agent }: AgentSettingsTabProps) {
           ) : null}
         </div>
       </div>
+
+      <div className="space-y-3 border-t pt-6">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold">API key</h3>
+          <p className="text-xs text-muted-foreground">
+            Used by the GovernanceClient SDK to authenticate this agent. Plaintext is shown
+            only once at generation; rotate to invalidate the existing key.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {agent?.hasApiKey ? (
+            <code className="rounded-md border bg-muted/50 px-2 py-1 font-mono text-xs">
+              {agent?.apiKeyHint ?? "agtos_…"}
+            </code>
+          ) : (
+            <span className="text-xs text-muted-foreground">No key generated yet.</span>
+          )}
+          <Button
+            type="button"
+            variant={agent?.hasApiKey ? "outline" : "secondary"}
+            onClick={() => setKeyDialogOpen(true)}
+          >
+            <KeyRound className="mr-2 size-4" />
+            {agent?.hasApiKey ? "Rotate API key" : "Generate API key"}
+          </Button>
+        </div>
+      </div>
+
+      <RotateApiKeyDialog
+        open={keyDialogOpen}
+        onOpenChange={setKeyDialogOpen}
+        agentId={id}
+        agentName={agent?.name ?? "this agent"}
+        hasExistingKey={Boolean(agent?.hasApiKey)}
+        existingHint={agent?.apiKeyHint ?? null}
+      />
 
       {confirm ? (
         <ConfirmDialog

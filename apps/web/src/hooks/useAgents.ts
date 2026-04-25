@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { agentsApi } from '@/lib/api'
+import { agentsApi, type AgentApiKeyResponse } from '@/lib/api'
 import { agentKeys } from '@/lib/queryClient'
 import { useToast } from '@/hooks/use-toast'
 
@@ -65,6 +65,21 @@ export function useDeleteAgent(id: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: agentKeys.all })
       toast({ title: 'Agent deleted' })
+    },
+  })
+}
+
+export function useRotateAgentApiKey(id: string) {
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  return useMutation<AgentApiKeyResponse, Error, void>({
+    mutationFn: () => agentsApi.rotateApiKey(id).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: agentKeys.detail(id) })
+      toast({ title: 'API key rotated' })
+    },
+    onError: () => {
+      toast({ title: 'Failed to rotate API key', variant: 'destructive' })
     },
   })
 }

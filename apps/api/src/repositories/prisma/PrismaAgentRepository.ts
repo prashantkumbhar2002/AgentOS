@@ -203,6 +203,8 @@ export class PrismaAgentRepository implements IAgentRepository {
                 name: t.name,
                 description: t.description,
             })),
+            apiKeyHint: agent.apiKeyHint ?? null,
+            hasApiKey: Boolean(agent.apiKeyHash),
         };
     }
 }

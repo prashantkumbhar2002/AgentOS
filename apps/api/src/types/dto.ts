@@ -40,6 +40,8 @@ export interface AgentDetail {
     updatedAt: Date;
     lastActiveAt: Date | null;
     tools: AgentToolDTO[];
+    apiKeyHint: string | null;
+    hasApiKey: boolean;
 }
 
 export interface AgentDetailView extends AgentDetail {

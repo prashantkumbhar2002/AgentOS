@@ -71,6 +71,8 @@ export class MockAgentRepository implements IAgentRepository {
             updatedAt: now,
             lastActiveAt: null,
             tools: (data.tools ?? []).map((t) => ({ id: randomUUID(), name: t.name, description: t.description })),
+            apiKeyHint: null,
+            hasApiKey: false,
         };
         this.store.set(agent.id, agent);
         return agent;
@@ -140,6 +142,10 @@ export class MockAgentRepository implements IAgentRepository {
 
     async setApiKey(id: string, hash: string, hint: string): Promise<void> {
         this.apiKeys.set(id, { hash, hint });
+        const agent = this.store.get(id);
+        if (agent) {
+            this.store.set(id, { ...agent, apiKeyHint: hint, hasApiKey: true });
+        }
     }
 
     seed(overrides: Partial<AgentDetail> = {}): AgentDetail {
@@ -159,6 +165,8 @@ export class MockAgentRepository implements IAgentRepository {
             updatedAt: now,
             lastActiveAt: null,
             tools: [],
+            apiKeyHint: null,
+            hasApiKey: false,
             ...overrides,
         };
         this.store.set(agent.id, agent);
