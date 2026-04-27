@@ -22,6 +22,43 @@ Think of it as **an ops control plane for AI agents** — the same way you'd use
 
 ---
 
+## What's New (v2.1 → v2.3)
+
+The platform has gone through three rounds of post-v2 hardening. The changes are grouped by what they protect against:
+
+**Stop losing money** *(v2.2)*
+- **Server-side budgets.** Each agent can carry a `budgetUsd` cap. The audit ingest path (`/api/v1/audit/log`, `/api/v1/audit/batch`) sums the agent's last 30 days of spend on every write and returns HTTP **402 `BUDGET_EXCEEDED`** the moment the cap would be crossed. The SDK silently drops the rejected batch (the action already happened — only the receipt was refused) and the dashboard receives an `agent.budget_exceeded` SSE event.
+- **No more N+1 on audit ingest.** Batches now use `IAgentRepository.findInfoByIds` to pre-validate every agent (existence, status, budget) in a single query, regardless of batch size.
+
+**Stop losing events** *(v2.1)*
+- **EventBuffer requeue + exponential backoff** on every flush failure, capped at `bufferMaxFlushAttempts` (default 5). Survivors are pushed back onto the queue rather than dropped on the floor.
+- **Auto-flush on shutdown.** `beforeExit` / `SIGINT` / `SIGTERM` trigger a best-effort drain — no more "the last 8 LLM calls vanished because the script exited" surprises.
+- **Per-trace IDs.** `gov.withTrace(fn)` runs each request under a fresh `traceId` via `AsyncLocalStorage`, so a single long-lived `GovernanceClient` instance shared by an HTTP server no longer pins every request to the same trace.
+
+**Stop pattern-matching error messages** *(v2.1 + v2.2)*
+- `PolicyDeniedError` now exposes **public** `ticketId` and `kind` (`POLICY` / `APPROVAL_DENIED` / `APPROVAL_EXPIRED` / `APPROVAL_TIMEOUT`).
+- **`ApprovalRequestError`** is the new typed error for transport / auth / 4xx / 5xx failures during the approval **request itself** — distinct from a real human "deny". `kind` discriminates `NETWORK` / `AUTH` / `FORBIDDEN` / `NOT_FOUND` / `RATE_LIMITED` / `SERVER` / `INVALID_RESPONSE` / `UNKNOWN`.
+- The login route now throws `InvalidCredentialsError` (`401 INVALID_CREDENTIALS`) for both unknown emails and wrong passwords — preventing user enumeration.
+- Every API error now follows a single envelope: `{ error: <CODE>, message, details?, requestId }`. Status codes were tightened (`404` for missing resources, `409` for state conflicts) — the test suite was updated alongside the schema.
+
+**Stop one bad endpoint from breaking everything** *(v2.3)*
+- **Per-route circuit breaker.** A failing `/audit/batch` no longer trips the breaker on `/policies/check` — `CircuitBreakerRegistry` keys breakers by `host|first-path-segment` so each route fails independently.
+- **Full-jitter exponential backoff** on retries, capped at `retryMaxMs` (default 30s). Stops thundering-herd retry storms when many clients hit the same outage.
+- **Failed spans are tagged.** `withSpan(name, fn)` now emits a `span_failed` event with the span name, latency, and error message on rejection — so the TraceDrawer can render a "Failed" badge instead of forcing a human to inspect every child event.
+
+**Better SDK ergonomics** *(v2.3)*
+- **`gov.getMetrics()`** — O(1) snapshot of cost, buffer pressure, and per-route breaker state. Wire it to a `/healthz` endpoint or a Prometheus exporter.
+- **Configurable `sseConnectTimeoutMs`** (default `2_500`). The SDK falls back from SSE push to HTTP polling much faster when proxies silently drop the long-lived connection.
+- **Lazy `eventsource` polyfill.** No longer hard-required: the SDK uses the global `EventSource` if present (Node 22+, browsers), warns once and falls back to polling otherwise. Listed under `peerDependenciesMeta` as optional.
+- **Broader adapters.** Anthropic now exposes `streamMessage(...)`. OpenAI now exposes `streamChatCompletion(...)` and `createEmbedding(...)`. The streaming code path is exercised end-to-end by the **Research Agent** showcase, not just by unit tests.
+- **JSDoc** on every public SDK method — IDE hover docs explain *when* to reach for each helper, not just its type signature.
+
+**Better dashboard signals**
+- The Agent Detail page now has an **admin-only "Rotate API key"** button. The full key is shown exactly once; subsequent loads only show the last-four `apiKeyHint`.
+- Trace tree view shows per-span "Failed (latency)" badges and the underlying error message (driven by the new `span_failed` events).
+
+---
+
 ## How It Works — A Real Example
 
 Imagine you have an **Email Draft Agent** that writes and sends emails on behalf of your sales team.
@@ -69,9 +106,11 @@ Every AI agent in your organization is registered with:
 - **Risk classification** — LOW, MEDIUM, HIGH, or CRITICAL
 - **Environment** — DEV, STAGING, or PROD
 - **Tool declarations** — what tools the agent can use (e.g., `send_email`, `query_db`, `web_search`)
+- **Cost budget** — optional `budgetUsd` rolling 30-day spend cap, enforced server-side
 - **Lifecycle status** — agents move through DRAFT → ACTIVE → SUSPENDED → DEPRECATED
+- **Dedicated API key** — each agent has its own HMAC-SHA256-hashed API key. Admins can rotate it from the agent detail page; only a `apiKeyHint` (last 4 chars) is ever returned afterwards. The full key is shown exactly once, on creation or rotation.
 
-This gives you a single inventory of every AI agent, who owns it, what it can do, and how risky it is.
+This gives you a single inventory of every AI agent, who owns it, what it can do, how risky it is, and how much it's allowed to spend.
 
 ### 2. Audit Trail (with Hierarchical Traces)
 
@@ -84,25 +123,67 @@ Events are grouped into **traces** (a single agent session) and organized into *
 
 ### 3. GovernanceClient SDK (v2 — Provider-Agnostic)
 
-The SDK is how AI agents integrate with AgentOS. It's **provider-agnostic** — it works with Anthropic, OpenAI, Ollama, or any LLM accessible via HTTP.
+The SDK is how AI agents integrate with AgentOS. It's **provider-agnostic** — it works with Anthropic, OpenAI, Ollama, or any LLM accessible over HTTP — and is designed so the agent code reads like normal application code while the SDK silently captures every step.
 
-Key capabilities:
-- **`wrapLLMCall(fn, metadata)`** — wrap any async LLM call for automatic logging (tokens, cost, latency, success/failure)
-- **`wrapLLMStream(fn, metadata)`** — same for streaming responses
-- **`callTool(name, inputs, fn, options)`** — checks policy *before* executing, requests approval if needed, then runs the tool
-- **`withSpan(name, fn)`** — creates hierarchical trace spans for complex workflows
-- **Cost budgets** — set a `maxCostUsd` and the SDK throws `BudgetExceededError` when exceeded
-- **Resilience** — `CircuitBreaker` retries failed platform calls and can fail-open (agent continues) or fail-closed (agent stops)
-- **Non-blocking logging** — `EventBuffer` batches events and flushes asynchronously
+#### Core API
 
-Optional framework adapters provide zero-config integration:
-- `@agentos/governance-sdk/adapters/anthropic` — wraps Anthropic's `messages.create`
-- `@agentos/governance-sdk/adapters/openai` — wraps OpenAI's `chat.completions.create`
-- `@agentos/governance-sdk/adapters/langchain` — provides a LangChain callback handler
+| Method | What it does |
+|--------|--------------|
+| `wrapLLMCall(fn, metadata)` | Run any async LLM call; auto-logs tokens, cost, latency, success/failure as one `llm_call` event |
+| `wrapLLMStream(fn, onComplete)` | Same as above for streaming responses — yields chunks to the caller, logs once after the stream completes |
+| `callTool(name, inputs, fn, options?)` | Checks policy **before** running `fn`; requests human approval if the policy says so; logs the result |
+| `checkPolicy(actionType, riskScore?)` | Raw policy lookup. Used internally by `callTool`; exposed for advanced cases |
+| `withSpan(name, fn)` | Wrap a logical step so all events inside share a `spanId`; failures emit a dedicated `span_failed` event |
+| `withTrace(fn, traceId?)` | Run a request inside its own trace context (per-request isolation on a long-lived client) |
+| `logEvent(payload)` | Non-blocking ad-hoc audit event |
+| `getMetrics()` | Snapshot of cumulative cost, buffer pressure, and per-route circuit-breaker state — for `/healthz`, Prometheus, or debug dumps |
+| `shutdown()` | Best-effort flush; fires automatically on `beforeExit` / `SIGINT` / `SIGTERM` |
+
+#### Typed errors
+
+Catch by type — never by string-matching error messages.
+
+| Error | Thrown when | Useful fields |
+|-------|-------------|---------------|
+| `PolicyDeniedError` | A policy denied the action, or a human denied / let the approval expire | `actionType`, `ticketId`, `kind` (`POLICY` / `APPROVAL_DENIED` / `APPROVAL_EXPIRED` / `APPROVAL_TIMEOUT`) |
+| `ApprovalRequestError` | The approval **request** itself failed (network, 401, 429, 5xx, malformed response) — distinct from a real human "deny" | `kind` (`NETWORK` / `AUTH` / `FORBIDDEN` / `NOT_FOUND` / `RATE_LIMITED` / `SERVER` / `INVALID_RESPONSE` / `UNKNOWN`), `httpStatus`, `body` |
+| `BudgetExceededError` (client) | Cumulative `wrapLLMCall` cost crossed `BudgetConfig.maxCostUsd` with `onBudgetExceeded: 'throw'` | `currentCost`, `maxCost` |
+| `BudgetExceededError` (server, HTTP 402) | Audit batch rejected because the agent's rolling 30-day spend exceeded `agents.budgetUsd` | `agentId`, `currentUsd`, `budgetUsd`, `windowDays` |
+
+The SDK exports type-guards `isPolicyDeniedError(err)` and `isApprovalRequestError(err)` so application code stays robust across module reloads and bundlers.
+
+#### Resilience & cost control
+
+- **Per-route circuit breaker.** A failing `/audit/batch` no longer takes down `/policies/check`. Each route gets its own `CircuitBreaker` keyed by host + first path segment, so one degraded endpoint can't poison the others.
+- **Exponential backoff with full jitter** between retries — caps at `retryMaxMs` (default 30s) and decorrelates retry storms across many client instances.
+- **Fail-open vs fail-closed.** Choose at construction whether agent operations should continue (with a warning) or hard-fail when the platform is unreachable.
+- **Non-blocking logging.** `EventBuffer` batches events, retries failed flushes with backoff, requeues survivors, and drops the batch only after `bufferMaxFlushAttempts` (default 5).
+- **Auto-shutdown.** On `beforeExit` / `SIGINT` / `SIGTERM` the buffer is flushed before the process dies — no more lost final batches in serverless or CLI runs.
+- **Client-side budgets** (`maxCostUsd`, `warnAtUsd`) and **server-side budgets** (`agents.budgetUsd`, enforced in the audit ingest path on a 30-day rolling window) — the server returns HTTP 402 `BUDGET_EXCEEDED` and the SDK silently drops the batch (the action already happened; only the receipt is rejected) and broadcasts `agent.budget_exceeded` over SSE so the dashboard can react.
+
+#### Observability
+
+- **Hierarchical traces.** `withSpan(name, fn)` builds a nested `spanId` / `parentSpanId` tree that the dashboard's TraceDrawer renders as a collapsible tree view. Failed spans are tagged with a dedicated `span_failed` event so the UI can show "Failed (3.2s)" badges without scanning every child.
+- **Per-trace isolation.** `withTrace(fn)` runs each request under a fresh `traceId` even on a shared, long-lived client — essential for HTTP servers that don't construct a new SDK per request.
+- **`getMetrics()`** returns `{ cost, buffer, breakers, traceId }` in O(1) with no I/O — safe to call from a `/healthz` handler.
+
+#### Framework adapters
+
+Optional zero-config wrappers for popular SDKs. Imported as subpaths so unused adapters never enter the bundle.
+
+| Adapter | Surface |
+|---------|---------|
+| `@agentos/governance-sdk/adapters/anthropic` | `createMessage(...)` and `streamMessage(...)` (governed Anthropic streaming) |
+| `@agentos/governance-sdk/adapters/openai` | `createChatCompletion(...)`, `streamChatCompletion(...)`, and `createEmbedding(...)` |
+| `@agentos/governance-sdk/adapters/langchain` | LangChain `BaseCallbackHandler` keyed by `runId` so concurrent LLM/tool runs are tracked correctly |
 
 #### Migrating from SDK v1
 
-> **Breaking change.** SDK v2 removes the provider-specific `gov.createMessage(...)` helper that wrapped Anthropic's `messages.create`. Replace it with the provider-agnostic `gov.wrapLLMCall(fn, metadata)` (or the matching adapter, e.g. `createAnthropicAdapter(client, gov).messages.create(...)`). `wrapLLMCall` accepts any async function and tracks tokens/cost/latency uniformly across Anthropic, OpenAI, Ollama, and custom HTTP models. Policy enforcement also moved earlier in the lifecycle — wrap side-effectful actions in `gov.callTool(name, inputs, fn, { riskScore })` so the platform can DENY/REQUIRE_APPROVAL **before** the action runs, and catch denials with `isPolicyDeniedError(err)` instead of pattern-matching the error message. See `apps/api/src/showcase-agents/` for full v2 examples (Anthropic adapter, raw `wrapLLMCall` with Ollama, and a multi-provider workflow).
+> **Breaking change.** SDK v2 removes the Anthropic-specific `gov.createMessage(...)` helper. Replace it with the provider-agnostic `gov.wrapLLMCall(fn, metadata)` — or the matching adapter, e.g. `createAnthropicAdapter(gov, anthropic).createMessage(...)`. `wrapLLMCall` accepts any async function and tracks tokens / cost / latency uniformly across Anthropic, OpenAI, Ollama, and custom HTTP models.
+>
+> Policy enforcement also moved earlier in the lifecycle: wrap side-effectful actions in `gov.callTool(name, inputs, fn, { riskScore })` so the platform can DENY / REQUIRE_APPROVAL **before** the action runs. Detect denials with `isPolicyDeniedError(err)` and approval-pipeline failures with `isApprovalRequestError(err)` — never pattern-match error messages.
+>
+> See `apps/api/src/showcase-agents/` for full v2 examples: an Anthropic adapter agent, a streaming research agent, raw `wrapLLMCall` with Ollama, and a multi-provider workflow.
 
 ### 4. Policy Engine (with Pre-Execution Gating)
 
@@ -187,15 +268,17 @@ Every agent has a **health score from 0 to 100** that gives you an at-a-glance v
 
 ### 9. Showcase Agents
 
-To demonstrate the platform, AgentOS includes four working agents using SDK v2:
+To demonstrate the platform, AgentOS ships four end-to-end agents — each one chosen to exercise a different code path of the SDK:
 
-**Email Draft Agent** — uses the Anthropic adapter with `withSpan` for hierarchical tracing, policy-gated `callTool` for the send action, and budget/resilience configuration.
+**Email Draft Agent** — `withSpan` hierarchical tracing + Anthropic adapter for the LLM + policy-gated `callTool` for the send action + client-side budget and resilience configured at construction.
 
-**Research Agent** — demonstrates nested spans for complex multi-step workflows, Anthropic adapter for LLM calls, and policy-gated tool calls for web searches and report saving.
+**Research Agent** — multi-step workflow with nested spans (`research-workflow` → `search` / `fetch` / `synthesize_report`) and policy-gated tool calls. **The synthesis step uses `streamMessage`**, so iterating the run from a terminal visually demonstrates streaming while `wrapLLMStream` records the final token totals once the stream closes — i.e. the streaming path is exercised end-to-end, not just by unit tests.
 
 **Local Email Agent** — uses the generic `wrapLLMCall` with Ollama (a local LLM), proving the SDK works with any HTTP-based model provider without vendor SDKs.
 
-**Multi-Provider Agent** — combines the Anthropic adapter and raw `wrapLLMCall` for different providers within a single governed trace, demonstrating multi-provider workflows.
+**Multi-Provider Agent** — combines the Anthropic adapter and raw `wrapLLMCall` for different providers within a single governed trace, demonstrating multi-provider workflows under one `traceId`.
+
+All four agents catch denials with `isPolicyDeniedError(err)` (the canonical pattern) instead of inspecting error messages.
 
 **Mock Data Seeder** — generates realistic demo data (3 agents, 50 audit log entries across 7 days, 5 approval tickets) so the dashboard looks populated for demos and development.
 
@@ -237,27 +320,32 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────┐
 │            React Dashboard (apps/web)             │
 │  Login · Dashboard · Agents · Approvals · Audit   │
 │  Analytics · Policies                             │
-└────────────────────────┬─────────────────────────┘
+└────────────────────────┬──────────────────────────┘
                          │  HTTP + SSE
-┌────────────────────────┼─────────────────────────┐
+┌────────────────────────┼──────────────────────────┐
 │          Fastify REST API (apps/api)              │
 │                        │                          │
 │  Auth · Agents · Audit · Approvals · Policies     │
 │  Analytics · Showcase                             │
 │                        │                          │
 │  Prisma (PostgreSQL) · Redis (BullMQ) · Slack     │
-└────────────────────────┼─────────────────────────┘
+└────────────────────────┼──────────────────────────┘
                          │
-┌────────────────────────┼─────────────────────────┐
+┌────────────────────────┼───────────────────────────┐
 │     GovernanceClient SDK v2 (packages/)            │
-│  Provider-agnostic: wrapLLMCall, callTool,        │
-│  withSpan, policy gate, budget, resilience         │
-│  Adapters: Anthropic, OpenAI, LangChain           │
-└───────────────────────────────────────────────────┘
+│  Provider-agnostic: wrapLLMCall, wrapLLMStream,    │
+│  callTool, withSpan, withTrace, getMetrics         │
+│  EventBuffer (requeue + auto-flush on shutdown)    │
+│  Per-route CircuitBreaker (jittered backoff)       │
+│  Typed errors: PolicyDeniedError,                  │
+│    ApprovalRequestError, BudgetExceededError       │
+│  Adapters: Anthropic (incl. stream),               │
+│    OpenAI (chat + stream + embeddings), LangChain  │
+└────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -350,6 +438,9 @@ Open http://localhost:5173 and sign in as `admin@agentos.dev` / `admin123`.
 | FIX-04 | Fix N+1 Query Performance | Done |
 | FIX-05 | API Versioning (`/api/v1/` prefix) | Done |
 | SDK v2 | Provider-Agnostic SDK, EventBuffer, SpanManager, Policy Gate, Cost Budgets, CircuitBreaker, Streaming, Framework Adapters, Showcase Rewrites | Done |
+| v2.1 (production hardening) | Per-trace IDs, EventBuffer requeue + auto-flush on shutdown, public `ticketId` on `PolicyDeniedError`, SDK auth on `/policies/check`, dashboard "Rotate API key" | Done |
+| v2.2 (real-money safeguards) | Server-side rolling 30-day budgets (HTTP 402), batched `findInfoByIds` for audit ingest (kills N+1), typed `ApprovalRequestError`, structured error envelope across 31 routes, `InvalidCredentialsError` to prevent user enumeration | Done |
+| v2.3 (observability + resilience) | `span_failed` events with metadata, per-route `CircuitBreakerRegistry` + full-jitter exponential backoff, `gov.getMetrics()`, configurable `sseConnectTimeoutMs`, lazy `eventsource` polyfill, OpenAI/Anthropic streaming + embeddings adapters, `isPolicyDeniedError` adopted across showcase agents, JSDoc on all SDK public methods, `researchAgent` end-to-end streaming demo | Done |
 
 ---
 
