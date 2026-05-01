@@ -2,7 +2,6 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
 import prismaPlugin from './plugins/prisma.js';
 import authPlugin from './plugins/auth.js';
@@ -17,10 +16,9 @@ import approvalRoutes from './modules/approvals/approvals.routes.js';
 import policyRoutes from './modules/policies/policies.routes.js';
 import analyticsRoutes from './modules/analytics/analytics.routes.js';
 import showcaseRoutes from './modules/showcase/showcase.routes.js';
+import eventsRoutes from './modules/events/events.routes.js';
 import { createContainer } from './container.js';
 import { env } from './config/env.js';
-import { AuthenticationError } from './errors/index.js';
-import { authenticateAgentOrUser } from './plugins/auth.js';
 
 export async function buildApp() {
     const fastify = Fastify({
@@ -85,112 +83,7 @@ export async function buildApp() {
     await fastify.register(policyRoutes, { prefix: '/api/v1/policies' });
     await fastify.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
     await fastify.register(showcaseRoutes, { prefix: '/api/v1/showcase' });
-
-    const eventsTokenAuth = authenticateAgentOrUser(fastify);
-    fastify.post(
-        '/api/v1/events/token',
-        { preHandler: [eventsTokenAuth] },
-        async (request, reply) => {
-            let payload: Record<string, unknown>;
-            if (request.agent) {
-                payload = { agentId: request.agent.id, type: 'sse' };
-            } else {
-                const { id, role } = request.user;
-                payload = { userId: id, role, type: 'sse' };
-            }
-            const sseToken = jwt.sign(payload, env.SSE_SECRET, { expiresIn: 30 });
-            return reply.status(200).send({ sseToken, expiresIn: 30 });
-        },
-    );
-
-    fastify.get('/api/v1/events/agent-stream', async (request, reply) => {
-        const query = request.query as Record<string, string>;
-        const token = query['token'];
-        const ticketId = query['ticketId'];
-
-        if (!token) {
-            throw new AuthenticationError('TOKEN_MISSING');
-        }
-        if (!ticketId) {
-            return reply.status(400).send({ error: 'ticketId required' });
-        }
-
-        try {
-            const payload = jwt.verify(token, env.SSE_SECRET) as { type?: string };
-            if (payload.type !== 'sse') {
-                throw new Error('Not an SSE token');
-            }
-        } catch {
-            throw new AuthenticationError('TOKEN_INVALID');
-        }
-
-        reply.hijack();
-
-        const origin = env.NODE_ENV === 'production' ? env.FRONTEND_URL : '*';
-        reply.raw.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': origin,
-            'Access-Control-Allow-Credentials': 'true',
-        });
-
-        reply.raw.write(': connected\n\n');
-
-        const clientId = fastify.sse.addClient(reply, (event) => {
-            if (event.type !== 'approval.resolved') return false;
-            const payload = event.payload as { ticketId?: string } | null | undefined;
-            return payload?.ticketId === ticketId;
-        });
-
-        const heartbeat = setInterval(() => {
-            try {
-                reply.raw.write(': ping\n\n');
-            } catch {
-                clearInterval(heartbeat);
-            }
-        }, 15_000);
-
-        reply.raw.on('close', () => {
-            clearInterval(heartbeat);
-            fastify.sse.removeClient(clientId);
-        });
-    });
-
-    fastify.get('/api/v1/events/stream', async (request, reply) => {
-        const token = (request.query as Record<string, string>)['token'];
-        if (!token) {
-            throw new AuthenticationError('TOKEN_MISSING');
-        }
-
-        try {
-            const payload = jwt.verify(token, env.SSE_SECRET) as { type?: string };
-            if (payload.type !== 'sse') {
-                throw new Error('Not an SSE token');
-            }
-        } catch {
-            throw new AuthenticationError('TOKEN_INVALID');
-        }
-
-        reply.hijack();
-
-        const origin = env.NODE_ENV === 'production' ? env.FRONTEND_URL : '*';
-        reply.raw.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': origin,
-            'Access-Control-Allow-Credentials': 'true',
-        });
-
-        const clientId = fastify.sse.addClient(reply);
-
-        reply.raw.write(': connected\n\n');
-
-        reply.raw.on('close', () => {
-            fastify.sse.removeClient(clientId);
-        });
-    });
+    await fastify.register(eventsRoutes, { prefix: '/api/v1/events' });
 
     // 301 redirects: old unversioned paths → /api/v1/...
     const VERSIONED_PREFIXES = ['agents', 'audit', 'approvals', 'policies', 'analytics', 'showcase', 'events'];
