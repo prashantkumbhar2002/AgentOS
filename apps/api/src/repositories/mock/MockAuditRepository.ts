@@ -31,6 +31,8 @@ export class MockAuditRepository implements IAuditRepository {
             success: data.success ?? true,
             errorMsg: data.errorMsg ?? null,
             metadata: data.metadata ?? null,
+            langsmithRunId: data.langsmithRunId ?? null,
+            langsmithProject: data.langsmithProject ?? null,
             createdAt: new Date(),
         };
         this.store.push(entry);

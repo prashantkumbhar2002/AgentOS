@@ -80,6 +80,8 @@ export interface AuditLogEntry {
     success: boolean;
     errorMsg: string | null;
     metadata: unknown;
+    langsmithRunId: string | null;
+    langsmithProject: string | null;
     createdAt: Date;
 }
 
@@ -237,6 +239,8 @@ export interface CreateAuditLogInput {
     success?: boolean;
     errorMsg?: string | null;
     metadata?: unknown;
+    langsmithRunId?: string | null;
+    langsmithProject?: string | null;
 }
 
 export interface ResolveTicketInput {

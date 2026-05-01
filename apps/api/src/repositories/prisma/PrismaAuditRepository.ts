@@ -31,6 +31,8 @@ export class PrismaAuditRepository implements IAuditRepository {
                 success: data.success ?? true,
                 errorMsg: data.errorMsg ?? null,
                 metadata: data.metadata ?? undefined,
+                langsmithRunId: data.langsmithRunId ?? null,
+                langsmithProject: data.langsmithProject ?? null,
             },
         });
         return this.toEntry(log);
@@ -55,6 +57,8 @@ export class PrismaAuditRepository implements IAuditRepository {
                 success: d.success ?? true,
                 errorMsg: d.errorMsg ?? null,
                 metadata: d.metadata ?? undefined,
+                langsmithRunId: d.langsmithRunId ?? null,
+                langsmithProject: d.langsmithProject ?? null,
                 createdAt: (d as any).createdAt ?? new Date(),
             })),
         });
@@ -267,6 +271,8 @@ export class PrismaAuditRepository implements IAuditRepository {
             success: log.success,
             errorMsg: log.errorMsg,
             metadata: log.metadata,
+            langsmithRunId: log.langsmithRunId ?? null,
+            langsmithProject: log.langsmithProject ?? null,
             createdAt: log.createdAt,
         };
     }

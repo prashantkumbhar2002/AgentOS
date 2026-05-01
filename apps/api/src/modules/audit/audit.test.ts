@@ -289,6 +289,182 @@ describe('GET /api/v1/audit/logs?export=csv', () => {
   });
 });
 
+describe('LangSmith cross-link fields (P1)', () => {
+  const VALID_RUN_ID = '550e8400-e29b-41d4-a716-446655440000';
+  const VALID_PROJECT = 'agentos-dev';
+  const NAMESPACED_PROJECT = 'acme-corp/email-draft-prompt';
+
+  it('persists langsmithRunId/langsmithProject on POST /audit/log and returns them via /traces/:traceId', async () => {
+    const traceId = randomUUID();
+    const post = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId,
+        langsmithRunId: VALID_RUN_ID,
+        langsmithProject: NAMESPACED_PROJECT,
+      });
+    expect(post.status).toBe(201);
+
+    const trace = await agent
+      .get(`/api/v1/audit/traces/${traceId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(trace.status).toBe(200);
+    expect(trace.body.events).toHaveLength(1);
+    expect(trace.body.events[0].langsmithRunId).toBe(VALID_RUN_ID);
+    expect(trace.body.events[0].langsmithProject).toBe(NAMESPACED_PROJECT);
+  });
+
+  it('persists langsmithRunId on every event in a batch ingest', async () => {
+    const traceId = randomUUID();
+    const runIds = [randomUUID(), randomUUID(), randomUUID()];
+
+    const batch = await agent
+      .post('/api/v1/audit/batch')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        events: runIds.map((runId) => ({
+          ...VALID_EVENT,
+          agentId: testAgentId,
+          traceId,
+          langsmithRunId: runId,
+          langsmithProject: VALID_PROJECT,
+        })),
+      });
+    expect(batch.status).toBe(201);
+    expect(batch.body.count).toBe(3);
+
+    const trace = await agent
+      .get(`/api/v1/audit/traces/${traceId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    const persisted = (trace.body.events as Array<{ langsmithRunId: string | null }>).map(
+      (e) => e.langsmithRunId,
+    );
+    expect(new Set(persisted)).toEqual(new Set(runIds));
+  });
+
+  it('returns null langsmithRunId/Project for events that did not include them (back-compat)', async () => {
+    const traceId = randomUUID();
+    await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ ...VALID_EVENT, agentId: testAgentId, traceId });
+
+    const trace = await agent
+      .get(`/api/v1/audit/traces/${traceId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(trace.body.events[0].langsmithRunId).toBeNull();
+    expect(trace.body.events[0].langsmithProject).toBeNull();
+  });
+
+  it('rejects langsmithRunId with disallowed chars (XSS attempt)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithRunId: '<script>alert(1)</script>',
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects langsmithRunId with embedded newline (log-injection attempt)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithRunId: 'abc\ndef',
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects oversized langsmithRunId (>64 chars)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithRunId: 'a'.repeat(65),
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a 64-char alphanumeric langsmithRunId (boundary)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithRunId: 'a'.repeat(64),
+      });
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects langsmithProject containing a slash chain that overflows (>128 chars)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithProject: 'a/b/'.repeat(40),
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects langsmithProject with disallowed chars (space)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithProject: 'has space',
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts namespaced langsmithProject (slash + dots are allowed)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithProject: 'acme.io/team-a/email-draft.v3',
+      });
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects an empty langsmithRunId (min(1) guard)', async () => {
+    const res = await agent
+      .post('/api/v1/audit/log')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ...VALID_EVENT,
+        agentId: testAgentId,
+        traceId: randomUUID(),
+        langsmithRunId: '',
+      });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('GET /api/v1/audit/stats/:agentId', () => {
   it('returns correct aggregations', async () => {
     const traceId1 = randomUUID();

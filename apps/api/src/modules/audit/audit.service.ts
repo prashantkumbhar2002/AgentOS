@@ -42,6 +42,8 @@ export class AuditService {
             success: data.success,
             errorMsg: data.errorMsg,
             metadata: data.metadata,
+            langsmithRunId: data.langsmithRunId,
+            langsmithProject: data.langsmithProject,
         });
 
         this.agentRepo.updateLastActiveAt(data.agentId);
@@ -67,6 +69,8 @@ export class AuditService {
             success: e.success,
             errorMsg: e.errorMsg,
             metadata: e.metadata,
+            langsmithRunId: e.langsmithRunId,
+            langsmithProject: e.langsmithProject,
         }));
 
         const count = await this.auditRepo.createMany(inputs);

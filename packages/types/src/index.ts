@@ -55,6 +55,8 @@ export {
   TraceIdParamsSchema,
   TopToolSchema,
   AgentStatsResponseSchema,
+  LangSmithRunIdSchema,
+  LangSmithProjectSchema,
 } from './audit.js';
 
 export type {

@@ -251,6 +251,107 @@ describe('GovernanceClient', () => {
         expect(llmEvents[0]).toMatchObject({ success: false, errorMsg: 'stream broke' });
     });
 
+    describe('LangSmith cross-link metadata (P1 plumbing)', () => {
+        const RUN_ID = '550e8400-e29b-41d4-a716-446655440000';
+        const PROJECT = 'agentos-dev';
+
+        function readBufferedEvents(): Array<Record<string, unknown>> {
+            const [, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+            return JSON.parse(options.body as string).events;
+        }
+
+        it('wrapLLMCall propagates langsmithRunId and langsmithProject into the buffered event', async () => {
+            const client = createClient();
+
+            await client.wrapLLMCall(
+                async () => ({ ok: true }),
+                {
+                    provider: 'test',
+                    model: 'test-model',
+                    langsmithRunId: RUN_ID,
+                    langsmithProject: PROJECT,
+                },
+            );
+
+            await client.shutdown();
+            const events = readBufferedEvents();
+            expect(events[0]).toMatchObject({
+                event: 'llm_call',
+                success: true,
+                langsmithRunId: RUN_ID,
+                langsmithProject: PROJECT,
+            });
+        });
+
+        it('wrapLLMCall propagates langsmith fields on the failure path too', async () => {
+            const client = createClient();
+
+            await expect(
+                client.wrapLLMCall(
+                    async () => { throw new Error('boom'); },
+                    {
+                        provider: 'test',
+                        model: 'test-model',
+                        langsmithRunId: RUN_ID,
+                        langsmithProject: PROJECT,
+                    },
+                ),
+            ).rejects.toThrow('boom');
+
+            await client.shutdown();
+            const events = readBufferedEvents();
+            expect(events[0]).toMatchObject({
+                event: 'llm_call',
+                success: false,
+                errorMsg: 'boom',
+                langsmithRunId: RUN_ID,
+                langsmithProject: PROJECT,
+            });
+        });
+
+        it('wrapLLMStream propagates langsmith fields from onComplete', async () => {
+            const client = createClient();
+
+            async function* source() {
+                yield 'a';
+                yield 'b';
+            }
+
+            for await (const _ of client.wrapLLMStream(source, (chunks) => ({
+                provider: 'test',
+                model: 'mock-1',
+                outputTokens: chunks.length,
+                langsmithRunId: RUN_ID,
+                langsmithProject: PROJECT,
+            }))) {
+                void _;
+            }
+
+            await client.shutdown();
+            const events = readBufferedEvents();
+            expect(events[0]).toMatchObject({
+                event: 'llm_call',
+                success: true,
+                langsmithRunId: RUN_ID,
+                langsmithProject: PROJECT,
+            });
+        });
+
+        it('omits langsmith fields entirely when caller does not supply them (no null leakage)', async () => {
+            const client = createClient();
+
+            await client.wrapLLMCall(
+                async () => 'result',
+                { provider: 'test', model: 'test-model' },
+            );
+
+            await client.shutdown();
+            const events = readBufferedEvents();
+            expect(events[0]).not.toHaveProperty('langsmithRunId');
+            expect(events[0]).not.toHaveProperty('langsmithProject');
+        });
+    });
+
     it('requestApproval returns AUTO_APPROVED when policy allows', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
             ok: true,

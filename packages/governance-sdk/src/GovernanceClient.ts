@@ -14,6 +14,8 @@ export interface LLMCallMetadata {
     inputTokens?: number;
     outputTokens?: number;
     costUsd?: number;
+    langsmithRunId?: string;
+    langsmithProject?: string;
 }
 
 export interface BudgetConfig {
@@ -330,6 +332,8 @@ export class GovernanceClient {
                 costUsd,
                 latencyMs,
                 success: true,
+                ...(meta.langsmithRunId !== undefined && { langsmithRunId: meta.langsmithRunId }),
+                ...(meta.langsmithProject !== undefined && { langsmithProject: meta.langsmithProject }),
             });
 
             return result;
@@ -346,6 +350,11 @@ export class GovernanceClient {
                 latencyMs,
                 success: false,
                 errorMsg: err instanceof Error ? err.message : String(err),
+                // Failure paths still cross-link to LangSmith if the caller knew
+                // the run id ahead of time — e.g. when the id was minted client-side
+                // before the LLM call started.
+                ...(meta.langsmithRunId !== undefined && { langsmithRunId: meta.langsmithRunId }),
+                ...(meta.langsmithProject !== undefined && { langsmithProject: meta.langsmithProject }),
             });
             throw err;
         }
@@ -397,6 +406,8 @@ export class GovernanceClient {
                             costUsd,
                             latencyMs,
                             success: true,
+                            ...(meta.langsmithRunId !== undefined && { langsmithRunId: meta.langsmithRunId }),
+                            ...(meta.langsmithProject !== undefined && { langsmithProject: meta.langsmithProject }),
                         });
                     }
                 } catch (err) {

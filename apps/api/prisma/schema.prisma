@@ -54,26 +54,28 @@ model User {
 }
 
 model Agent {
-  id           String           @id @default(uuid())
-  name         String
-  description  String
-  ownerTeam    String
-  llmModel     String
-  riskTier     RiskTier
-  environment  Environment
-  status       AgentStatus      @default(DRAFT)
-  approvedBy   String?
-  tags         String[]
-  budgetUsd    Float?
-  apiKeyHash   String?          @unique
-  apiKeyHint   String?
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
-  lastActiveAt DateTime?
-  tools        AgentTool[]
-  auditLogs    AuditLog[]
-  approvals    ApprovalTicket[]
-  policies     AgentPolicy[]
+  id               String           @id @default(uuid())
+  name             String
+  description      String
+  ownerTeam        String
+  llmModel         String
+  riskTier         RiskTier
+  environment      Environment
+  status           AgentStatus      @default(DRAFT)
+  approvedBy       String?
+  tags             String[]
+  budgetUsd        Float?
+  apiKeyHash       String?          @unique
+  apiKeyHint       String?
+  langsmithEnabled Boolean          @default(false)
+  langsmithProject String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  lastActiveAt     DateTime?
+  tools            AgentTool[]
+  auditLogs        AuditLog[]
+  approvals        ApprovalTicket[]
+  policies         AgentPolicy[]
 }
 
 model AgentTool {
@@ -85,31 +87,34 @@ model AgentTool {
 }
 
 model AuditLog {
-  id           String   @id @default(uuid())
-  agentId      String
-  traceId      String
-  spanId       String?
-  parentSpanId String?
-  event        String
-  model        String?
-  toolName     String?
-  inputs       Json?
-  outputs      Json?
-  inputTokens  Int?
-  outputTokens Int?
-  costUsd      Float?
-  latencyMs    Int?
-  success      Boolean  @default(true)
-  errorMsg     String?
-  metadata     Json?
-  createdAt    DateTime @default(now())
-  agent        Agent    @relation(fields: [agentId], references: [id])
+  id               String   @id @default(uuid())
+  agentId          String
+  traceId          String
+  spanId           String?
+  parentSpanId     String?
+  event            String
+  model            String?
+  toolName         String?
+  inputs           Json?
+  outputs          Json?
+  inputTokens      Int?
+  outputTokens     Int?
+  costUsd          Float?
+  latencyMs        Int?
+  success          Boolean  @default(true)
+  errorMsg         String?
+  metadata         Json?
+  langsmithRunId   String?
+  langsmithProject String?
+  createdAt        DateTime @default(now())
+  agent            Agent    @relation(fields: [agentId], references: [id])
 
   @@index([agentId])
   @@index([traceId])
   @@index([createdAt])
   @@index([event])
   @@index([spanId])
+  @@index([langsmithRunId]) // Reverse-lookup: given a LangSmith run id, find the AgentOS audit row.
 }
 
 model ApprovalTicket {

@@ -13,6 +13,36 @@ export const AuditEventTypeSchema = z.enum([
 ]);
 export type AuditEventType = z.infer<typeof AuditEventTypeSchema>;
 
+/**
+ * LangSmith run id. Matches LangSmith's UUID-shaped run identifiers with a
+ * little headroom for self-hosted variants. Deliberately stricter than the
+ * project regex below: run ids never contain `/` or `.`, so allowing those
+ * would only widen the log-injection surface for no upside. The size cap
+ * also prevents a malicious caller from stuffing an arbitrarily large
+ * string into the audit log.
+ */
+export const LangSmithRunIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, 'langsmithRunId must match /^[A-Za-z0-9_-]+$/');
+
+/**
+ * LangSmith project name. May be a plain name (`agentos-dev`) or namespaced
+ * (`acme-corp/email-draft-prompt`). Allows `/`, `.`, `-`, `_` and
+ * alphanumerics — the same set LangSmith accepts in the wild — bounded at
+ * 128 chars to keep audit rows lean and to prevent log-injection via
+ * embedded newlines or control chars.
+ */
+export const LangSmithProjectSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(
+    /^[A-Za-z0-9_\-/.]+$/,
+    'langsmithProject must match /^[A-Za-z0-9_\\-/.]+$/',
+  );
+
 export const AuditEventSchema = z.object({
   agentId: z.string().uuid(),
   traceId: z.string().uuid(),
@@ -29,6 +59,8 @@ export const AuditEventSchema = z.object({
   success: z.boolean().default(true),
   errorMsg: z.string().optional(),
   metadata: z.unknown().optional(),
+  langsmithRunId: LangSmithRunIdSchema.optional(),
+  langsmithProject: LangSmithProjectSchema.optional(),
 });
 export type AuditEventInput = z.infer<typeof AuditEventSchema>;
 
@@ -75,6 +107,8 @@ export const AuditLogSchema = z.object({
   success: z.boolean(),
   errorMsg: z.string().nullable(),
   metadata: z.unknown().nullable(),
+  langsmithRunId: z.string().nullable(),
+  langsmithProject: z.string().nullable(),
   createdAt: z.coerce.date(),
 });
 export type AuditLog = z.infer<typeof AuditLogSchema>;
