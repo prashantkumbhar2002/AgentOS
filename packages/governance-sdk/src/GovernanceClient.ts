@@ -14,7 +14,23 @@ export interface LLMCallMetadata {
     inputTokens?: number;
     outputTokens?: number;
     costUsd?: number;
+    /**
+     * LangSmith run id this call was also reported to. When the SDK gains
+     * an optional LangSmith fanout (planned PR4), it will mint this id
+     * client-side and pass it through both the AgentOS audit event and
+     * the LangSmith run, letting the dashboard cross-link the two views.
+     * Today this field is plumbed end-to-end so callers can populate it
+     * manually (e.g. when using LangChain's tracer alongside the SDK).
+     *
+     * Server-side validation: max 64 chars, `^[A-Za-z0-9_-]+$`.
+     */
     langsmithRunId?: string;
+    /**
+     * Logical LangSmith project name (NOT a URL). Allows grouping runs
+     * across agents that share a workflow.
+     *
+     * Server-side validation: max 128 chars, `^[A-Za-z0-9_\-/.]+$`.
+     */
     langsmithProject?: string;
 }
 
