@@ -6,6 +6,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Skeleton } from "@/components/ui/skeleton"
 import { useTrace } from "@/hooks/useAuditLogs"
 import { formatDuration, formatRelativeTime, formatUsd } from "@/lib/formatters"
+import {
+  LANGSMITH_ORG_ID,
+  LANGSMITH_UI_BASE,
+  buildLangSmithRunUrl,
+} from "@/lib/langsmith"
+import { ExternalLink } from "lucide-react"
 import { useMemo } from "react"
 
 export interface TraceDrawerProps {
@@ -33,6 +39,8 @@ interface TraceEvent {
   errorMsg?: string | null
   createdAt?: string | Date
   metadata?: Record<string, unknown> | null
+  langsmithRunId?: string | null
+  langsmithProject?: string | null
 }
 
 interface SpanNode {
@@ -120,11 +128,29 @@ function EventRow({ ev }: { ev: TraceEvent }) {
   const modelTool = ev.model ?? ev.toolName ?? ev.tool ?? ev.toolId ?? "—"
   const cost = ev.costUsd ?? ev.cost
   const lat = ev.latencyMs ?? ev.durationMs
+  const eventType = ev.eventType ?? ev.event ?? ev.type
+
+  // Cross-link to LangSmith. Strict gating, all three must hold:
+  //   1. The dashboard has been configured with a LangSmith UI base.
+  //   2. The event is an LLM call (we don't link tool_calls / approvals etc.).
+  //   3. The row has a server-validated langsmithRunId.
+  // The url builder additionally validates the http(s) scheme and encodes
+  // every path segment, so a malformed env value cannot produce an unsafe
+  // href. When the result is null we render no link at all.
+  const langSmithUrl =
+    LANGSMITH_UI_BASE && eventType === "llm_call" && ev.langsmithRunId
+      ? buildLangSmithRunUrl({
+          base: LANGSMITH_UI_BASE,
+          orgId: LANGSMITH_ORG_ID,
+          project: ev.langsmithProject,
+          runId: ev.langsmithRunId,
+        })
+      : null
 
   return (
     <div className="space-y-1 rounded-md border bg-muted/30 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <EventBadge type={ev.eventType ?? ev.event ?? ev.type} />
+        <EventBadge type={eventType} />
         <span className="text-xs text-muted-foreground">
           {ev.createdAt ? formatRelativeTime(ev.createdAt) : "—"}
         </span>
@@ -134,6 +160,18 @@ function EventRow({ ev }: { ev: TraceEvent }) {
           <Badge variant="destructive" className="text-[10px]">
             Fail
           </Badge>
+        )}
+        {langSmithUrl && (
+          <a
+            href={langSmithUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="View this run in LangSmith"
+            className="inline-flex items-center gap-1 rounded-full border border-transparent bg-secondary px-2 py-0.5 text-[10px] font-semibold text-secondary-foreground transition-colors hover:bg-secondary/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            View in LangSmith
+            <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+          </a>
         )}
       </div>
       <p className="font-mono text-xs text-muted-foreground">{modelTool}</p>
