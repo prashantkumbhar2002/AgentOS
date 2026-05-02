@@ -19,3 +19,5 @@ export { EventBuffer } from './EventBuffer.js';
 export { SpanManager } from './SpanManager.js';
 export type { Span } from './SpanManager.js';
 export { CircuitBreaker, CircuitBreakerRegistry, routeKeyFromUrl } from './CircuitBreaker.js';
+export { createLangSmithBridge } from './langsmith.js';
+export type { LangSmithConfig, LangSmithBridge, LangSmithBridgeMetrics, LangSmithRunRecord } from './langsmith.js';

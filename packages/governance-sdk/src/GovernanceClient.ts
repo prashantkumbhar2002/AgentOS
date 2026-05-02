@@ -3,6 +3,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventBuffer } from './EventBuffer.js';
 import { SpanManager } from './SpanManager.js';
 import { CircuitBreakerRegistry, routeKeyFromUrl } from './CircuitBreaker.js';
+import {
+    createLangSmithBridge,
+    type LangSmithBridge,
+    type LangSmithBridgeMetrics,
+    type LangSmithConfig,
+} from './langsmith.js';
 
 interface TraceContext {
     traceId: string;
@@ -15,12 +21,20 @@ export interface LLMCallMetadata {
     outputTokens?: number;
     costUsd?: number;
     /**
-     * LangSmith run id this call was also reported to. When the SDK gains
-     * an optional LangSmith fanout (planned PR4), it will mint this id
-     * client-side and pass it through both the AgentOS audit event and
-     * the LangSmith run, letting the dashboard cross-link the two views.
-     * Today this field is plumbed end-to-end so callers can populate it
-     * manually (e.g. when using LangChain's tracer alongside the SDK).
+     * Optional inputs to the LLM call. NOT recorded in the AgentOS audit
+     * log (which only stores outputs/metadata) — used solely as the
+     * `inputs` payload for the optional LangSmith fanout. Subject to
+     * the bridge's redact callback and `metadataOnly` setting; omit if
+     * you'd rather LangSmith store nothing about the prompt.
+     */
+    inputs?: unknown;
+    /**
+     * LangSmith run id this call was also reported to. When the SDK's
+     * optional LangSmith fanout is enabled (`config.langsmith`), it
+     * mints this id automatically and stamps it into the AgentOS audit
+     * event so the dashboard can deep-link to the LangSmith run.
+     * Callers may also set it manually when using LangChain's tracer
+     * alongside the SDK.
      *
      * Server-side validation: max 64 chars, `^[A-Za-z0-9_-]+$`.
      */
@@ -90,6 +104,16 @@ export interface GovernanceClientConfig {
      * happy path while degrading fast. Default: 2_500.
      */
     sseConnectTimeoutMs?: number;
+    /**
+     * Optional LangSmith fanout. When provided, every wrapped LLM call is
+     * **also** reported to LangSmith alongside the AgentOS audit event,
+     * with a shared `langsmithRunId` so the dashboard can deep-link
+     * between the two views. Off by default. The fanout pipeline is
+     * fully isolated (own buffer + circuit breaker) so a LangSmith
+     * outage cannot affect AgentOS audit ingest, budget enforcement, or
+     * approval flow.
+     */
+    langsmith?: LangSmithConfig;
 }
 
 export type PolicyDenialKind = 'POLICY' | 'APPROVAL_DENIED' | 'APPROVAL_EXPIRED' | 'APPROVAL_TIMEOUT' | 'UNKNOWN';
@@ -189,6 +213,12 @@ export class GovernanceClient {
     private readonly sseConnectTimeoutMs: number;
     private readonly traceStorage = new AsyncLocalStorage<TraceContext>();
     private readonly defaultTraceId: string;
+    /**
+     * LangSmith fanout bridge. Constructed when the caller passes a
+     * `langsmith` config block; otherwise undefined and the wrappers
+     * skip every LangSmith branch entirely (zero overhead).
+     */
+    private readonly langsmithBridge?: LangSmithBridge;
     private cumulativeCostUsd = 0;
     private exitHandlersInstalled = false;
     private readonly exitHandlers = {
@@ -220,6 +250,10 @@ export class GovernanceClient {
                 maxFlushAttempts: config.bufferMaxFlushAttempts,
             },
         );
+
+        if (config.langsmith) {
+            this.langsmithBridge = createLangSmithBridge(config.langsmith);
+        }
 
         if ((config.autoShutdown ?? true) && typeof process !== 'undefined' && typeof process.on === 'function') {
             this.installExitHandlers();
@@ -331,14 +365,29 @@ export class GovernanceClient {
     ): Promise<T> {
         this.checkBudget();
         const start = Date.now();
+        const startTime = new Date(start);
+
+        // When the LangSmith bridge is configured, mint the run id BEFORE
+        // the LLM call starts so the AgentOS audit event can cross-link
+        // even on the failure path. When it isn't configured, the caller
+        // may still supply `meta.langsmithRunId` for manual cross-linking
+        // (e.g. when running LangChain's tracer in parallel) — that's
+        // preserved below via the `??` fallback.
+        const bridgeRunId = this.langsmithBridge?.mintRunId();
+        const bridgeProject = this.langsmithBridge?.project;
 
         try {
             const result = await fn();
             const latencyMs = Date.now() - start;
+            const endTime = new Date();
             const meta = typeof metadata === 'function' ? metadata(result) : metadata;
             const costUsd = meta.costUsd ?? 0;
 
             this.trackCost(costUsd);
+
+            const eventRunId = bridgeRunId ?? meta.langsmithRunId;
+            const eventProject = bridgeProject ?? meta.langsmithProject;
+
             this.logEvent({
                 event: 'llm_call',
                 model: meta.model,
@@ -348,16 +397,42 @@ export class GovernanceClient {
                 costUsd,
                 latencyMs,
                 success: true,
-                ...(meta.langsmithRunId !== undefined && { langsmithRunId: meta.langsmithRunId }),
-                ...(meta.langsmithProject !== undefined && { langsmithProject: meta.langsmithProject }),
+                ...(eventRunId !== undefined && { langsmithRunId: eventRunId }),
+                ...(eventProject !== undefined && { langsmithProject: eventProject }),
             });
+
+            // Best-effort fanout to LangSmith. The bridge owns its own
+            // buffer + breaker, so this call is non-blocking and any
+            // outage is contained on its side.
+            if (bridgeRunId && this.langsmithBridge) {
+                this.langsmithBridge.recordLLM({
+                    runId: bridgeRunId,
+                    name: meta.model,
+                    runType: 'llm',
+                    startTime,
+                    endTime,
+                    inputs: meta.inputs,
+                    outputs: result,
+                    metadata: {
+                        provider: meta.provider,
+                        inputTokens: meta.inputTokens,
+                        outputTokens: meta.outputTokens,
+                        costUsd,
+                        latencyMs,
+                    },
+                });
+            }
 
             return result;
         } catch (err) {
             const latencyMs = Date.now() - start;
+            const endTime = new Date();
             const meta = typeof metadata === 'function'
                 ? { provider: 'unknown', model: 'unknown' }
                 : metadata;
+
+            const eventRunId = bridgeRunId ?? meta.langsmithRunId;
+            const eventProject = bridgeProject ?? meta.langsmithProject;
 
             this.logEvent({
                 event: 'llm_call',
@@ -366,12 +441,22 @@ export class GovernanceClient {
                 latencyMs,
                 success: false,
                 errorMsg: err instanceof Error ? err.message : String(err),
-                // Failure paths still cross-link to LangSmith if the caller knew
-                // the run id ahead of time — e.g. when the id was minted client-side
-                // before the LLM call started.
-                ...(meta.langsmithRunId !== undefined && { langsmithRunId: meta.langsmithRunId }),
-                ...(meta.langsmithProject !== undefined && { langsmithProject: meta.langsmithProject }),
+                ...(eventRunId !== undefined && { langsmithRunId: eventRunId }),
+                ...(eventProject !== undefined && { langsmithProject: eventProject }),
             });
+
+            if (bridgeRunId && this.langsmithBridge) {
+                this.langsmithBridge.recordLLM({
+                    runId: bridgeRunId,
+                    name: meta.model,
+                    runType: 'llm',
+                    startTime,
+                    endTime,
+                    inputs: meta.inputs,
+                    error: err instanceof Error ? err.message : String(err),
+                    metadata: { provider: meta.provider, latencyMs },
+                });
+            }
             throw err;
         }
     }
@@ -396,9 +481,13 @@ export class GovernanceClient {
     ): AsyncIterable<TChunk> {
         this.checkBudget();
         const start = Date.now();
+        const startTime = new Date(start);
         const source = fn();
         const logEvent = this.logEvent.bind(this);
         const trackCost = this.trackCost.bind(this);
+        const bridge = this.langsmithBridge;
+        const bridgeRunId = bridge?.mintRunId();
+        const bridgeProject = bridge?.project;
 
         return {
             [Symbol.asyncIterator]: async function* () {
@@ -409,10 +498,13 @@ export class GovernanceClient {
                         yield chunk;
                     }
                     const latencyMs = Date.now() - start;
+                    const endTime = new Date();
                     const meta = onComplete(collected);
                     if (meta) {
                         const costUsd = meta.costUsd ?? 0;
                         trackCost(costUsd);
+                        const eventRunId = bridgeRunId ?? meta.langsmithRunId;
+                        const eventProject = bridgeProject ?? meta.langsmithProject;
                         logEvent({
                             event: 'llm_call',
                             model: meta.model,
@@ -422,12 +514,35 @@ export class GovernanceClient {
                             costUsd,
                             latencyMs,
                             success: true,
-                            ...(meta.langsmithRunId !== undefined && { langsmithRunId: meta.langsmithRunId }),
-                            ...(meta.langsmithProject !== undefined && { langsmithProject: meta.langsmithProject }),
+                            ...(eventRunId !== undefined && { langsmithRunId: eventRunId }),
+                            ...(eventProject !== undefined && { langsmithProject: eventProject }),
                         });
+
+                        if (bridgeRunId && bridge) {
+                            bridge.recordLLM({
+                                runId: bridgeRunId,
+                                name: meta.model,
+                                runType: 'llm',
+                                startTime,
+                                endTime,
+                                inputs: meta.inputs,
+                                // For streams the "outputs" is the full collected chunk array.
+                                // Callers that want a different shape can override via
+                                // a redactor on the bridge config.
+                                outputs: collected,
+                                metadata: {
+                                    provider: meta.provider,
+                                    inputTokens: meta.inputTokens,
+                                    outputTokens: meta.outputTokens,
+                                    costUsd,
+                                    latencyMs,
+                                },
+                            });
+                        }
                     }
                 } catch (err) {
                     const latencyMs = Date.now() - start;
+                    const endTime = new Date();
                     logEvent({
                         event: 'llm_call',
                         provider: 'unknown',
@@ -435,7 +550,23 @@ export class GovernanceClient {
                         latencyMs,
                         success: false,
                         errorMsg: err instanceof Error ? err.message : String(err),
+                        ...(bridgeRunId !== undefined && { langsmithRunId: bridgeRunId }),
+                        ...(bridgeProject !== undefined && { langsmithProject: bridgeProject }),
                     });
+
+                    if (bridgeRunId && bridge) {
+                        bridge.recordLLM({
+                            runId: bridgeRunId,
+                            // onComplete hasn't fired so we don't know the model;
+                            // record the failure with a stable placeholder name.
+                            name: 'llm_call',
+                            runType: 'llm',
+                            startTime,
+                            endTime,
+                            error: err instanceof Error ? err.message : String(err),
+                            metadata: { latencyMs },
+                        });
+                    }
                     throw err;
                 }
             },
@@ -802,6 +933,7 @@ export class GovernanceClient {
         buffer: { pending: number; dropped: number };
         breakers: Record<string, { failures: number; openedAt: number | null; isOpen: boolean }>;
         traceId: string;
+        langsmith: LangSmithBridgeMetrics | { enabled: false };
     } {
         return {
             cost: {
@@ -814,6 +946,7 @@ export class GovernanceClient {
             },
             breakers: this.breakers.snapshot(),
             traceId: this.traceId,
+            langsmith: this.langsmithBridge?.getMetrics() ?? { enabled: false },
         };
     }
 
@@ -827,7 +960,13 @@ export class GovernanceClient {
      */
     async shutdown(): Promise<void> {
         this.uninstallExitHandlers();
-        await this.buffer.shutdown();
+        // Drain both buffers in parallel — they're independent pipelines.
+        // Wrapping in `Promise.allSettled` so a hung LangSmith flush can't
+        // delay the AgentOS audit drain (and vice versa).
+        await Promise.allSettled([
+            this.buffer.shutdown(),
+            this.langsmithBridge?.shutdown() ?? Promise.resolve(),
+        ]);
     }
 
     private async waitForApproval(

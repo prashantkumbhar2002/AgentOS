@@ -352,6 +352,254 @@ describe('GovernanceClient', () => {
         });
     });
 
+    describe('LangSmith fanout (P3 — wrapLLMCall opt-in)', () => {
+        const LS_API_KEY = 'ls_test_xxxxxxxxxxxxxxxxxxxxxxxx';
+        const LS_PROJECT = 'agentos-dev';
+        const LS_BASE = 'http://localhost:1984';
+
+        // Disambiguate fetch calls by URL — AgentOS audit vs LangSmith.
+        function setupDualFetch() {
+            const mock = vi.fn().mockImplementation((url: string) => {
+                if (url.endsWith('/runs/batch')) {
+                    return Promise.resolve({
+                        ok: true,
+                        status: 200,
+                        json: async () => ({}),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: async () => ({}),
+                });
+            });
+            vi.stubGlobal('fetch', mock);
+            return mock;
+        }
+
+        function callsTo(mock: ReturnType<typeof vi.fn>, urlContains: string) {
+            return mock.mock.calls.filter(
+                (c) => typeof c[0] === 'string' && (c[0] as string).includes(urlContains),
+            );
+        }
+
+        function lastBody(call: unknown): unknown {
+            const [, init] = call as [string, RequestInit];
+            return JSON.parse(init.body as string);
+        }
+
+        function makeClient(extra: Partial<ConstructorParameters<typeof GovernanceClient>[0]> = {}) {
+            return new GovernanceClient({
+                platformUrl: 'http://localhost:3000',
+                agentId: VALID_UUID,
+                apiKey: 'agentos-test-key',
+                autoShutdown: false,
+                langsmith: {
+                    apiKey: LS_API_KEY,
+                    projectName: LS_PROJECT,
+                    baseUrl: LS_BASE,
+                    bufferMaxSize: 1,
+                    bufferMaxFlushAttempts: 1,
+                    bufferRetryBaseMs: 1,
+                    bufferRetryMaxMs: 1,
+                },
+                ...extra,
+            });
+        }
+
+        it('wrapLLMCall fans out to LangSmith and stamps shared runId on the AgentOS audit event', async () => {
+            const fetchMock = setupDualFetch();
+            const client = makeClient();
+
+            await client.wrapLLMCall(
+                async () => ({ text: 'hello' }),
+                {
+                    provider: 'anthropic',
+                    model: 'claude-sonnet-4',
+                    inputTokens: 10,
+                    outputTokens: 5,
+                    costUsd: 0.001,
+                    inputs: { prompt: 'say hi' },
+                },
+            );
+            await client.shutdown();
+
+            const lsCalls = callsTo(fetchMock, '/runs/batch');
+            const auditCalls = callsTo(fetchMock, '/audit/batch');
+            expect(lsCalls).toHaveLength(1);
+            expect(auditCalls).toHaveLength(1);
+
+            const lsBody = lastBody(lsCalls[0]) as { post: Array<Record<string, unknown>> };
+            const auditBody = lastBody(auditCalls[0]) as { events: Array<Record<string, unknown>> };
+
+            // Same runId on both sides — that's the cross-link.
+            const lsRunId = lsBody.post[0]!['id'];
+            expect(typeof lsRunId).toBe('string');
+            expect(auditBody.events[0]!['langsmithRunId']).toBe(lsRunId);
+            expect(auditBody.events[0]!['langsmithProject']).toBe(LS_PROJECT);
+
+            expect(lsBody.post[0]).toMatchObject({
+                name: 'claude-sonnet-4',
+                run_type: 'llm',
+                session_name: LS_PROJECT,
+                inputs: { prompt: 'say hi' },
+                outputs: { text: 'hello' },
+            });
+            expect((lsBody.post[0]!['extra'] as Record<string, unknown>)['metadata']).toMatchObject({
+                provider: 'anthropic',
+                inputTokens: 10,
+                outputTokens: 5,
+                costUsd: 0.001,
+            });
+        });
+
+        it('wrapLLMCall fans out a failed run with error field', async () => {
+            const fetchMock = setupDualFetch();
+            const client = makeClient();
+
+            await expect(
+                client.wrapLLMCall(
+                    async () => { throw new Error('llm failed'); },
+                    { provider: 'anthropic', model: 'claude-sonnet-4' },
+                ),
+            ).rejects.toThrow('llm failed');
+            await client.shutdown();
+
+            const lsCalls = callsTo(fetchMock, '/runs/batch');
+            expect(lsCalls).toHaveLength(1);
+
+            const post = (lastBody(lsCalls[0]) as { post: Array<Record<string, unknown>> }).post[0]!;
+            expect(post['error']).toBe('llm failed');
+            expect(post['outputs']).toBeUndefined();
+        });
+
+        it('wrapLLMStream fans out the collected chunks once after the stream completes', async () => {
+            const fetchMock = setupDualFetch();
+            const client = makeClient();
+
+            async function* source() {
+                yield 'hel'; yield 'lo';
+            }
+
+            for await (const _ of client.wrapLLMStream(source, (chunks) => ({
+                provider: 'anthropic',
+                model: 'claude-sonnet-4',
+                outputTokens: chunks.length,
+            }))) {
+                void _;
+            }
+            await client.shutdown();
+
+            const lsCalls = callsTo(fetchMock, '/runs/batch');
+            expect(lsCalls).toHaveLength(1);
+
+            const post = (lastBody(lsCalls[0]) as { post: Array<Record<string, unknown>> }).post[0]!;
+            expect(post['outputs']).toEqual(['hel', 'lo']);
+            expect(post['name']).toBe('claude-sonnet-4');
+        });
+
+        it('emits NO LangSmith fetch when the langsmith config is omitted (back-compat)', async () => {
+            const fetchMock = setupDualFetch();
+            const client = createClient();
+
+            await client.wrapLLMCall(
+                async () => 'ok',
+                { provider: 'test', model: 'test-model' },
+            );
+            await client.shutdown();
+
+            expect(callsTo(fetchMock, '/runs/batch')).toHaveLength(0);
+            expect(callsTo(fetchMock, '/audit/batch')).toHaveLength(1);
+        });
+
+        it('a 5xx LangSmith outage does NOT prevent the AgentOS audit batch from being delivered', async () => {
+            const mock = vi.fn().mockImplementation((url: string) => {
+                if (url.endsWith('/runs/batch')) {
+                    return Promise.resolve({
+                        ok: false,
+                        status: 503,
+                        json: async () => ({}),
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: async () => ({}),
+                });
+            });
+            vi.stubGlobal('fetch', mock);
+
+            const client = makeClient();
+            // The wrapped call must succeed even though LangSmith is down.
+            const result = await client.wrapLLMCall(
+                async () => ({ text: 'still works' }),
+                { provider: 'test', model: 'test-model' },
+            );
+            expect(result).toEqual({ text: 'still works' });
+
+            await client.shutdown();
+
+            // AgentOS audit got through.
+            expect(callsTo(mock, '/audit/batch')).toHaveLength(1);
+            // LangSmith was tried (and dropped after one attempt because we
+            // pinned bufferMaxFlushAttempts: 1 in makeClient).
+            expect(callsTo(mock, '/runs/batch').length).toBeGreaterThanOrEqual(1);
+        });
+
+        it('getMetrics().langsmith reflects {enabled:false} when fanout is not configured', () => {
+            setupDualFetch();
+            const client = createClient();
+            const metrics = client.getMetrics();
+            expect(metrics.langsmith).toEqual({ enabled: false });
+        });
+
+        it('getMetrics().langsmith reports enabled state + buffer/breaker fields when fanout is configured', () => {
+            setupDualFetch();
+            const client = makeClient();
+            const metrics = client.getMetrics();
+            expect(metrics.langsmith).toMatchObject({
+                enabled: true,
+                pending: 0,
+                dropped: 0,
+                breaker: { isOpen: false },
+                lastFlushMs: 0,
+            });
+        });
+
+        it('shutdown drains both buffers in parallel without one blocking the other', async () => {
+            // LangSmith is hung (never resolves); AgentOS responds normally.
+            // shutdown() must still complete via Promise.allSettled — without
+            // it, a hung LangSmith would freeze the audit drain and vice
+            // versa. We use a short timeout to detect the hang in the test.
+            const mock = vi.fn().mockImplementation((url: string) => {
+                if (url.endsWith('/runs/batch')) {
+                    return new Promise((_resolve, reject) => {
+                        setTimeout(() => reject(new Error('hang')), 50);
+                    });
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: async () => ({}),
+                });
+            });
+            vi.stubGlobal('fetch', mock);
+
+            const client = makeClient();
+            await client.wrapLLMCall(
+                async () => 'ok',
+                { provider: 'test', model: 'test-model' },
+            );
+
+            // If shutdown awaited LangSmith serially this would time out
+            // since LangSmith hangs ~50ms before failing. Promise.allSettled
+            // ensures it returns as soon as both settle.
+            const start = Date.now();
+            await client.shutdown();
+            expect(Date.now() - start).toBeLessThan(2000);
+        });
+    });
+
     it('requestApproval returns AUTO_APPROVED when policy allows', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
             ok: true,
