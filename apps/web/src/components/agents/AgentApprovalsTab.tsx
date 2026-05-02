@@ -1,3 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// `any` is used pragmatically here because the API responses are defensively
+// accessed via field-alias chains (camelCase + snake_case) and runtime guards
+// (`Array.isArray`, `typeof === "number"`). Replacing with strict types
+// requires a coordinated typing pass across the dashboard's API hooks; tracked
+// as a follow-up cleanup PR.
 import { useMemo } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import {

@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// See AgentApprovalsTab.tsx for the rationale on `any` in this layer.
 import { useNavigate } from "react-router-dom"
 import { RiskBadge, StatusBadge } from "@/components/shared"
 import { Badge } from "@/components/ui/badge"

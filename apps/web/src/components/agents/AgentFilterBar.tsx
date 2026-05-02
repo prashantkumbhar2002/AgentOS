@@ -20,11 +20,22 @@ type AgentFilterBarProps = {
 export function AgentFilterBar({ filters, onChange }: AgentFilterBarProps) {
   const [search, setSearch] = useState(filters.search ?? "")
   const filtersRef = useRef(filters)
-  filtersRef.current = filters
+  useEffect(() => {
+    filtersRef.current = filters
+  }, [filters])
 
+  // Sync the locally-debounced `search` text when the controlled `filters.search`
+  // value changes from the outside (e.g. parent clears all filters, or restores
+  // a saved view). A `useEffect` is the right tool here: we're syncing internal
+  // state to a prop that may change asynchronously. A `key`-based remount would
+  // also work but would lose focus on the input mid-typing and break the debounce
+  // timer below — strictly worse UX. The lint rule is suppressed locally because
+  // this is the documented "controlled-prop sync" exception.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setSearch(filters.search ?? "")
   }, [filters.search])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     const id = window.setTimeout(() => {

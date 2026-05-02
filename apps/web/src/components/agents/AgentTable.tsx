@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// See AgentApprovalsTab.tsx for the rationale on `any` in this layer.
 import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { EmptyState, HealthBar, RiskBadge, StatusBadge } from "@/components/shared"

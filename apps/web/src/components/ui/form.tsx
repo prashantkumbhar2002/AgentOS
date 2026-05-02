@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components */
+// See badge.tsx for the rationale on the co-located shadcn/ui hooks/utility exports.
 import * as React from "react"
 import * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"

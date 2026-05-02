@@ -4,7 +4,8 @@ import { useAuthStore } from '@/store/useAuthStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Logo } from '@/components/brand/Logo'
 
 export function LoginPage() {
   const token = useAuthStore((s) => s.token)
@@ -34,12 +35,8 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background">
       <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground text-xl font-bold">
-            A
-          </div>
-          <CardTitle className="text-2xl">AgentOS</CardTitle>
-          <CardDescription>AI Agent Governance Platform</CardDescription>
+        <CardHeader className="items-center pb-2">
+          <Logo className="justify-center" markClassName="h-12 w-12" />
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">

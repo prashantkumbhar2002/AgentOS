@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Bot, ShieldCheck, FileSearch, BarChart3, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { LogoMark } from '@/components/brand/Logo'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -15,8 +16,10 @@ export function Sidebar() {
   return (
     <aside className="flex w-60 flex-col border-r border-border bg-card">
       <div className="flex h-14 items-center gap-2 px-4 border-b border-border">
-        <div className="h-7 w-7 rounded-lg bg-primary flex items-center justify-center text-primary-foreground text-sm font-bold">A</div>
-        <span className="text-lg font-semibold tracking-tight">AgentOS</span>
+        <LogoMark className="h-7 w-7" decorative />
+        <span className="text-lg font-semibold tracking-tight">
+          Agent<span className="text-emerald-600 dark:text-emerald-400">OS</span>
+        </span>
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {navItems.map((item) => (

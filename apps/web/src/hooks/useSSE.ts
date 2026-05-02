@@ -21,9 +21,16 @@ export function useSSE() {
     const eventSourceRef = useRef<EventSource | null>(null)
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
     const eventIdRef = useRef(0)
+    const connectRef = useRef<() => void>(() => {})
 
     const connect = useCallback(async () => {
         if (!token) return
+
+        const scheduleReconnect = () => {
+            const delay = Math.min(backoffRef.current, MAX_BACKOFF)
+            backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF)
+            reconnectTimerRef.current = setTimeout(() => connectRef.current(), delay)
+        }
 
         try {
             const res = await fetch(`${API_URL}/api/v1/events/token`, {
@@ -34,9 +41,7 @@ export function useSSE() {
             })
 
             if (!res.ok) {
-                const delay = Math.min(backoffRef.current, MAX_BACKOFF)
-                backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF)
-                reconnectTimerRef.current = setTimeout(connect, delay)
+                scheduleReconnect()
                 return
             }
 
@@ -73,22 +78,28 @@ export function useSSE() {
                     if (type.includes('audit') || type.includes('llm_call') || type.includes('tool_call')) {
                         queryClient.invalidateQueries({ queryKey: auditKeys.all })
                     }
-                } catch {}
+                } catch {
+                    // SSE messages are best-effort: a single malformed payload from
+                    // the server (e.g. truncated keep-alive frame, partial flush)
+                    // must not tear down the live connection. We intentionally
+                    // swallow parse errors and wait for the next message rather
+                    // than reconnecting, which would cause noisy dashboard churn.
+                }
             }
 
             es.onerror = () => {
                 es.close()
                 setIsConnected(false)
-                const delay = Math.min(backoffRef.current, MAX_BACKOFF)
-                backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF)
-                reconnectTimerRef.current = setTimeout(connect, delay)
+                scheduleReconnect()
             }
         } catch {
-            const delay = Math.min(backoffRef.current, MAX_BACKOFF)
-            backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF)
-            reconnectTimerRef.current = setTimeout(connect, delay)
+            scheduleReconnect()
         }
     }, [token])
+
+    useEffect(() => {
+        connectRef.current = () => void connect()
+    }, [connect])
 
     useEffect(() => {
         connect()

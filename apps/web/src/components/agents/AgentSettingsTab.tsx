@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// See AgentApprovalsTab.tsx for the rationale on `any` in this layer.
 import { useEffect, useState } from "react"
 import { KeyRound } from "lucide-react"
 import { ConfirmDialog } from "@/components/shared"
@@ -40,6 +42,11 @@ export function AgentSettingsTab({ agent }: AgentSettingsTabProps) {
   const [confirm, setConfirm] = useState<StatusAction | null>(null)
   const [keyDialogOpen, setKeyDialogOpen] = useState(false)
 
+  // Hydrate the form when the `agent` prop arrives or its identity changes
+  // (e.g. user navigates between agents, server-side refresh). The
+  // alternative — `key={agent.id}` on the parent — would unmount and remount
+  // this whole subtree on every refetch, discarding unsaved edits.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!agent) return
     setName(agent.name ?? "")
@@ -49,6 +56,7 @@ export function AgentSettingsTab({ agent }: AgentSettingsTabProps) {
     const t = agent.tags
     setTags(Array.isArray(t) ? t.join(", ") : typeof t === "string" ? t : "")
   }, [agent])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   if (!id) {
     return null

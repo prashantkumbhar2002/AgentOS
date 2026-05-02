@@ -1,3 +1,9 @@
+/* eslint-disable react-refresh/only-export-components */
+// shadcn/ui generates these components with a co-located variants helper for
+// reuse (e.g. `<a className={badgeVariants({ variant: "outline" })}>`). The
+// rule is scoped to React Fast Refresh which is dev-only; bundling and
+// runtime are unaffected. Splitting variants into a separate file would
+// diverge from the upstream shadcn template and break `npx shadcn add`.
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 

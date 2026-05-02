@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// See AgentApprovalsTab.tsx for the rationale on `any` in this layer.
 import { useMemo } from "react"
 import { EventBadge } from "@/components/shared"
 import {

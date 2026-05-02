@@ -38,6 +38,12 @@ export function RotateApiKeyDialog({
   const [hint, setHint] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
+  // Wipe the (possibly secret) plaintext API key from React state on close
+  // so it cannot leak via a later re-open. This MUST happen on the falling
+  // edge of `open`, not via `key`-based remount, because the parent decides
+  // when to actually unmount us — leaving the secret in memory across opens
+  // would be a real security regression.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!open) {
       setPlaintext(null)
@@ -46,6 +52,7 @@ export function RotateApiKeyDialog({
       resetRotate()
     }
   }, [open, resetRotate])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const onConfirm = async () => {
     try {

@@ -51,12 +51,19 @@ export function RegisterAgentModal({ open, onClose }: RegisterAgentModalProps) {
   const [formData, setFormData] = useState(initialForm)
   const createAgent = useCreateAgent()
 
+  // Reset wizard state whenever the dialog transitions to open so the user
+  // gets a fresh form on each invocation. This is intentionally a state
+  // reset on the rising edge of `open`, not a `key`-based remount: keeping
+  // the same component instance avoids re-creating Radix's portal and
+  // focus-trap on every reopen.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (open) {
       setStep(1)
       setFormData(initialForm())
     }
   }, [open])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const canNextStep1 = formData.name.trim().length > 0
   const canNextStep2 = true

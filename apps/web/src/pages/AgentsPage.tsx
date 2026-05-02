@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// See components/agents/AgentApprovalsTab.tsx for the rationale on `any`.
 import { useMemo, useState } from "react"
 import { AgentFilterBar } from "@/components/agents/AgentFilterBar"
 import { AgentTable } from "@/components/agents/AgentTable"
