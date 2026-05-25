@@ -18,12 +18,14 @@
   "peerDependencies": {
     "@anthropic-ai/sdk": ">=0.39.0",
     "openai": ">=4.0.0",
-    "eventsource": ">=2.0.0"
+    "eventsource": ">=2.0.0",
+    "@restatedev/restate-sdk-clients": ">=1.3.0"
   },
   "peerDependenciesMeta": {
     "@anthropic-ai/sdk": { "optional": true },
     "openai": { "optional": true },
-    "eventsource": { "optional": true }
+    "eventsource": { "optional": true },
+    "@restatedev/restate-sdk-clients": { "optional": true }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
