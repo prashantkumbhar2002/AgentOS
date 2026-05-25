@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import * as restate from '@restatedev/restate-sdk';
 import { getEnv } from './config/env.js';
 

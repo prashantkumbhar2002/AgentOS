@@ -6,10 +6,10 @@
 
 ---
 
-## Phase 1: Foundation ✅ 20% Complete
+## Phase 1: Foundation ✅ 40% Complete
 
 - [x] T1.1: Add Restate Dependencies (2h) - DONE
-- [ ] T1.2: Set up Restate Runtime (4h) - TODO
+- [x] T1.2: Set up Restate Runtime (4h) - DONE (reusing existing container on ports 8091/9070)
 - [ ] T1.3: Workflow Service Skeleton (4h) - TODO  
 - [ ] T1.4: Database Migration (3h) - TODO
 - [ ] T1.5: Dev Environment Deploy (4h) - TODO
@@ -79,3 +79,14 @@
 
 **Total Effort:** 161 hours across 8 weeks  
 **Last Updated:** 2026-05-25
+
+---
+
+## T1.2 Completion Notes
+
+Successfully reused existing container (v1.6.2):
+- **Admin API**: `http://localhost:9070`
+- **Ingress API**: `http://localhost:8091`
+- **Deployment ID**: `dp_13QQKNa2Cy0xaha0HbxSVXj`
+- **Network**: Connected via host IP (172.14.2.26)
+- **Status**: Verified healthy and accepting workflow service registrations

@@ -2,6 +2,13 @@
 
 Durable workflow handlers for AgentOS agent orchestration.
 
+## Prerequisites
+
+- Node.js 20+
+- Running AgentOS API (`apps/api`)
+- Running PostgreSQL database
+- Running Restate instance (reusing existing container on ports 8091/9070)
+
 ## Setup
 
 ```bash
@@ -14,6 +21,17 @@ cp .env.example .env
 # Start in development mode
 npm run dev
 
+# In another terminal, register with Restate (use your host IP)
+# Get your host IP: hostname -I | awk '{print $1}'
+curl -X POST http://localhost:9070/deployments \
+  -H 'Content-Type: application/json' \
+  -d '{"uri": "http://YOUR_HOST_IP:9080"}'
+
+# Example with host IP 172.14.2.26:
+# curl -X POST http://localhost:9070/deployments \
+#   -H 'Content-Type: application/json' \
+#   -d '{"uri": "http://172.14.2.26:9080"}'
+
 # Build for production
 npm run build
 npm start
@@ -22,7 +40,14 @@ npm start
 ## Health Check
 
 ```bash
-curl http://localhost:9080/health
+# Workflow service health
+curl http://localhost:9080/health/check
+
+# Restate instance health (admin API)
+curl http://localhost:9070/health
+
+# Restate ingress health
+curl http://localhost:8091/restate/health
 ```
 
 ## Project Structure
