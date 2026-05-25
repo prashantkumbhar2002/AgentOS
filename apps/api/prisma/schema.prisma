@@ -43,39 +43,65 @@ enum PolicyEffect {
   REQUIRE_APPROVAL
 }
 
+enum WorkflowStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum TriggerType {
+  MANUAL
+  SCHEDULED
+  WEBHOOK
+  EVENT
+}
+
+enum WorkflowExecutionStatus {
+  PENDING
+  RUNNING
+  SUSPENDED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 model User {
-  id           String           @id @default(uuid())
-  email        String           @unique
-  passwordHash String
-  name         String
-  role         String           @default("viewer")
-  createdAt    DateTime         @default(now())
-  approvals    ApprovalTicket[] @relation("ResolvedBy")
+  id                  String               @id @default(uuid())
+  email               String               @unique
+  passwordHash        String
+  name                String
+  role                String               @default("viewer")
+  createdAt           DateTime             @default(now())
+  approvals           ApprovalTicket[]     @relation("ResolvedBy")
+  workflowDefinitions WorkflowDefinition[]
+  workflowTriggers    WorkflowTrigger[]
 }
 
 model Agent {
-  id               String           @id @default(uuid())
-  name             String
-  description      String
-  ownerTeam        String
-  llmModel         String
-  riskTier         RiskTier
-  environment      Environment
-  status           AgentStatus      @default(DRAFT)
-  approvedBy       String?
-  tags             String[]
-  budgetUsd        Float?
-  apiKeyHash       String?          @unique
-  apiKeyHint       String?
-  langsmithEnabled Boolean          @default(false)
-  langsmithProject String?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  lastActiveAt     DateTime?
-  tools            AgentTool[]
-  auditLogs        AuditLog[]
-  approvals        ApprovalTicket[]
-  policies         AgentPolicy[]
+  id                  String               @id @default(uuid())
+  name                String
+  description         String
+  ownerTeam           String
+  llmModel            String
+  riskTier            RiskTier
+  environment         Environment
+  status              AgentStatus          @default(DRAFT)
+  approvedBy          String?
+  tags                String[]
+  budgetUsd           Float?
+  apiKeyHash          String?              @unique
+  apiKeyHint          String?
+  langsmithEnabled    Boolean              @default(false)
+  langsmithProject    String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  lastActiveAt        DateTime?
+  tools               AgentTool[]
+  auditLogs           AuditLog[]
+  approvals           ApprovalTicket[]
+  policies            AgentPolicy[]
+  workflowDefinitions WorkflowDefinition[]
+  workflowExecutions  WorkflowExecution[]
 }
 
 model AgentTool {
@@ -130,11 +156,17 @@ model ApprovalTicket {
   expiresAt    DateTime
   slackMsgTs   String?
   createdAt    DateTime       @default(now())
-  agent        Agent          @relation(fields: [agentId], references: [id])
-  resolvedBy   User?          @relation("ResolvedBy", fields: [resolvedById], references: [id])
+
+  // Restate integration fields
+  restateWorkflowId  String?
+  restatePromiseName String?
+
+  agent      Agent @relation(fields: [agentId], references: [id])
+  resolvedBy User? @relation("ResolvedBy", fields: [resolvedById], references: [id])
 
   @@index([status])
   @@index([agentId])
+  @@index([restateWorkflowId])
 }
 
 model Policy {
@@ -164,4 +196,125 @@ model AgentPolicy {
   policy   Policy @relation(fields: [policyId], references: [id])
 
   @@id([agentId, policyId])
+}
+
+// Workflow Management Models
+
+model WorkflowDefinition {
+  id          String         @id @default(uuid())
+  name        String
+  description String?
+  version     String         @default("1.0.0")
+  status      WorkflowStatus @default(DRAFT)
+
+  // Workflow structure
+  definition   Json // Full workflow definition (steps, etc.)
+  inputSchema  Json? // JSON Schema for input validation
+  outputSchema Json? // JSON Schema for output
+
+  // Metadata
+  agentId   String
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tags      String[]
+
+  // Constraints
+  maxCostUsd    Decimal? @db.Decimal(10, 4)
+  maxDurationMs Int?
+
+  // Stats
+  executionCount Int @default(0)
+  successCount   Int @default(0)
+  failureCount   Int @default(0)
+
+  // Relations
+  agent      Agent               @relation(fields: [agentId], references: [id])
+  user       User                @relation(fields: [createdBy], references: [id])
+  triggers   WorkflowTrigger[]
+  executions WorkflowExecution[]
+
+  @@index([agentId])
+  @@index([status])
+  @@index([createdBy])
+}
+
+model WorkflowTrigger {
+  id                   String      @id @default(uuid())
+  workflowDefinitionId String
+  name                 String
+  description          String?
+  type                 TriggerType
+  enabled              Boolean     @default(true)
+
+  // Schedule config (for SCHEDULED type)
+  cronExpression String?
+  timezone       String? @default("UTC")
+
+  // Webhook config (for WEBHOOK type)
+  webhookSecret String?
+  webhookUrl    String? @unique
+
+  // Event config (for EVENT type)
+  eventType   String?
+  eventFilter Json?
+
+  // Input config
+  defaultInput   Json?
+  inputOverrides Json?
+
+  // Metadata
+  createdBy       String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lastTriggeredAt DateTime?
+  triggerCount    Int       @default(0)
+
+  // Relations
+  workflowDefinition WorkflowDefinition  @relation(fields: [workflowDefinitionId], references: [id], onDelete: Cascade)
+  user               User                @relation(fields: [createdBy], references: [id])
+  executions         WorkflowExecution[]
+
+  @@index([workflowDefinitionId])
+  @@index([type, enabled])
+  @@index([eventType])
+}
+
+model WorkflowExecution {
+  id                   String                  @id @default(uuid())
+  workflowId           String                  @unique // Restate workflow ID
+  workflowDefinitionId String
+  triggerId            String?
+  agentId              String
+  traceId              String
+  status               WorkflowExecutionStatus @default(PENDING)
+
+  // Execution data
+  input  Json
+  output Json?
+  error  String?
+  steps  Json? // Array of step statuses
+
+  // Timing
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  durationMs  Int?
+
+  // Cost tracking
+  totalCostUsd Decimal? @db.Decimal(10, 6)
+
+  // Restate integration
+  restateInvocationId String?
+  restateDeploymentId String?
+
+  // Relations
+  workflowDefinition WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id])
+  trigger            WorkflowTrigger?   @relation(fields: [triggerId], references: [id])
+  agent              Agent              @relation(fields: [agentId], references: [id])
+
+  @@index([workflowDefinitionId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([agentId])
+  @@index([traceId])
 }
