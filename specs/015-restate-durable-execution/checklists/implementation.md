@@ -1,18 +1,41 @@
 # Restate Durable Execution - Implementation Checklist
 
 **Feature:** 015-restate-durable-execution  
-**Status:** In Progress - Phase 1  
+**Status:** Phase 1 Complete + DAG Migration Complete  
 **Started:** 2026-05-25
+**Last Updated:** 2026-05-25 18:56 IST
 
 ---
 
-## Phase 1: Foundation ✅ 80% Complete
+## 🎉 DAG Migration Complete
+
+**Migrated from:** Sequential step-based workflows  
+**Migrated to:** DAG (Directed Acyclic Graph) architecture
+
+**Date:** 2026-05-25  
+**Summary:** See `DAG_MIGRATION_COMPLETE.md` for full details
+
+### DAG Implementation Checklist ✅
+
+- [x] Design DAG TypeScript types and schemas
+- [x] Update Prisma schema for DAG storage  
+- [x] Create DAG validation utilities (cycle detection, reachability)
+- [x] Rewrite execution engine for DAG traversal
+- [x] Create migration script (sequential → DAG)
+- [x] Convert existing 3 workflows to DAG format
+- [x] Test and verify DAG execution
+
+**Result:** 3 production-ready DAG workflows registered and running
+
+---
+
+## Phase 1: Foundation ✅ 100% Complete
 
 - [x] T1.1: Add Restate Dependencies (2h) - DONE
 - [x] T1.2: Set up Restate Runtime (4h) - DONE (reusing existing container on ports 8091/9070)
 - [x] T1.3: Workflow Service Skeleton (4h) - DONE (redesigned to generic engine)
 - [x] T1.4: Database Migration (3h) - DONE
-- [ ] T1.5: Dev Environment Deploy (4h) - TODO
+- [x] T1.5: Dev Environment Deploy (4h) - DONE
 
 **Phase 1 Target:** Week 1-2 (by 2026-06-08)
 
@@ -79,6 +102,47 @@
 
 **Total Effort:** 161 hours across 8 weeks  
 **Last Updated:** 2026-05-25
+
+---
+
+## T1.5 Completion Notes
+
+**Task**: Dev Environment Deploy - Connect workflow service to PostgreSQL
+
+Successfully integrated the workflow service with PostgreSQL for persistent storage:
+
+**What Was Implemented:**
+1. ✅ Added `@prisma/client` dependency to workflow service
+2. ✅ Created database client singleton (`src/config/database.ts`)
+3. ✅ Migrated workflow registry from in-memory to PostgreSQL
+4. ✅ Implemented database seeding for system user and agent (`src/config/seed.ts`)
+5. ✅ Updated workflow definitions to use system IDs
+6. ✅ Added graceful database disconnection on shutdown
+7. ✅ Fixed variable interpolation in execution context (added `_apiUrl`, `_workflowId`, `_definitionId`)
+
+**Verified:**
+- ✅ Workflow service starts and connects to PostgreSQL
+- ✅ System user and agent are seeded on startup
+- ✅ All 3 example workflows registered to database
+- ✅ Workflow definitions persisted and queryable via SQL
+- ✅ Restate integration working (workflows invoked successfully)
+- ✅ Variable interpolation working correctly in workflow steps
+
+**Database Verification:**
+```sql
+SELECT id, name, version, status FROM "WorkflowDefinition";
+-- Returns: email-approval-v1, research-task-v1, simple-approval-v1
+```
+
+**Integration Test:**
+```bash
+curl -X POST "http://localhost:8091/GenericWorkflowEngine/{key}/run/send" \
+  -H "Content-Type: application/json" \
+  -d '{"workflowDefinitionId": "simple-approval-v1", ...}'
+# Status: Accepted ✅
+```
+
+**Next Steps:** Phase 2 implementation (workflow management API endpoints, trigger system, UI)
 
 ---
 

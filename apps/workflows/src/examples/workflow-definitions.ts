@@ -13,8 +13,8 @@ export const emailApprovalWorkflowDefinition: WorkflowDefinition = {
   version: '1.0.0',
   
   metadata: {
-    agentId: 'system',
-    createdBy: 'system',
+    agentId: 'system-agent',
+    createdBy: 'system-user',
     createdAt: new Date().toISOString(),
     tags: ['email', 'approval', 'llm'],
   },
@@ -124,8 +124,8 @@ export const researchTaskWorkflowDefinition: WorkflowDefinition = {
   version: '1.0.0',
   
   metadata: {
-    agentId: 'system',
-    createdBy: 'system',
+    agentId: 'system-agent',
+    createdBy: 'system-user',
     createdAt: new Date().toISOString(),
     tags: ['research', 'llm', 'multi-step'],
   },
@@ -189,8 +189,8 @@ export const simpleApprovalWorkflowDefinition: WorkflowDefinition = {
   version: '1.0.0',
   
   metadata: {
-    agentId: 'system',
-    createdBy: 'system',
+    agentId: 'system-agent',
+    createdBy: 'system-user',
     createdAt: new Date().toISOString(),
     tags: ['approval', 'generic'],
   },

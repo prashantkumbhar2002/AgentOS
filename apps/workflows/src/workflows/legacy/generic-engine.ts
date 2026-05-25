@@ -57,7 +57,7 @@ export const genericWorkflowEngine = restate.workflow({
         stepCount: definition.steps.length,
       });
 
-      // Initialize execution context
+      // Initialize execution context with system variables
       let totalCost = 0;
       const maxCost = definition.constraints?.maxCostUsd ?? 10.0;
       const stepResults: WorkflowExecutionResult['steps'] = [];
@@ -66,6 +66,9 @@ export const genericWorkflowEngine = restate.workflow({
         _metadata: metadata,
         _agentId: agentId,
         _traceId: traceId,
+        _apiUrl: process.env.AGENTOS_API_URL || 'http://localhost:3000',
+        _workflowId: workflowId,
+        _definitionId: workflowDefinitionId,
       };
 
       // Step 2: Execute workflow steps

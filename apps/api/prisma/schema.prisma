@@ -208,7 +208,9 @@ model WorkflowDefinition {
   status      WorkflowStatus @default(DRAFT)
 
   // Workflow structure
-  definition   Json // Full workflow definition (steps, etc.)
+  definition   Json // Full workflow definition (DAG: {nodes, edges} or legacy: {steps})
+  isDag        Boolean @default(false) // true for DAG format, false for legacy sequential
+  entryNodeId  String? // Entry node ID for DAG workflows
   inputSchema  Json? // JSON Schema for input validation
   outputSchema Json? // JSON Schema for output
 
@@ -237,6 +239,7 @@ model WorkflowDefinition {
   @@index([agentId])
   @@index([status])
   @@index([createdBy])
+  @@index([isDag])
 }
 
 model WorkflowTrigger {
