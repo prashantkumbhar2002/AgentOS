@@ -1,9 +1,9 @@
 # AgentOS — Technical Design Document
 
 **Project**: AgentOS — AI Agent Governance & Management Platform
-**Version**: 5.3.0
-**Date**: 2026-04-27 (updated for v2.1 → v2.3 hardening)
-**Branch**: `feat/enhancements/v1`
+**Version**: 5.4.0
+**Date**: 2026-05-28 (added durable workflows service + LangSmith fanout)
+**Branch**: `main`
 
 ---
 
@@ -31,6 +31,8 @@
 20. [Frontend Architecture (EPIC 8)](#20-frontend-architecture-epic-8)
 21. [Constitution & Design Principles](#21-constitution--design-principles)
 22. [Glossary](#22-glossary)
+23. [Workflow Service — Durable DAG Execution (EPIC 9 / spec 015)](#23-workflow-service--durable-dag-execution-epic-9--spec-015)
+24. [LangSmith Fanout (Opt-In Observability)](#24-langsmith-fanout-opt-in-observability)
 
 ---
 
@@ -43,10 +45,12 @@ AgentOS is an AI Agent Governance & Management Platform that provides centralize
 - **Enforce governance policies** that automatically ALLOW, DENY, or require human approval for agent actions based on risk tier and action type
 - **Route high-risk decisions** through human-in-the-loop approval workflows with Slack integration and real-time notifications
 - **Track costs and usage** across all agents with org-wide analytics dashboards
-- **Demonstrate the platform** with two live Claude-powered showcase agents and a mock data seeder
+- **Demonstrate the platform** with four live LLM-powered showcase agents (Anthropic, Ollama, multi-provider) and a mock data seeder
 - **Visualize everything** through a production-grade React dashboard with 8 pages, real-time SSE feed, and interactive charts
+- **Run durable, user-defined workflows** as Directed Acyclic Graphs via a standalone Restate-powered service (`apps/workflows`), with parallel execution, conditional branching, and durable human-approval waits that survive process restarts and multi-day delays
+- **Forward LLM telemetry to LangSmith** as an optional, isolated fanout from the SDK — keeping AgentOS as the source of truth for policy/cost/audit while letting prompt engineers debug runs in LangSmith's UI
 
-The platform consists of a Fastify REST API backend and a React SPA frontend, designed for teams operating multiple AI agents in production.
+The platform consists of a Fastify REST API backend, a React SPA frontend, and a Restate-backed workflow service — designed for teams operating multiple AI agents in production.
 
 ---
 
@@ -103,10 +107,33 @@ The platform consists of a Fastify REST API backend and a React SPA frontend, de
 │  CostBudget (spend limits)        │
 │  CircuitBreaker (resilience)      │     ┌───────────────────────────────────────┐
 │  SSE Approvals (push + polling)   │     │  Framework Adapters (optional)        │
-│                                   │     │  - Anthropic adapter                  │
-│  Adapters:                        │     │  - OpenAI adapter                     │
-│  anthropic, openai, langchain     │     │  - LangChain callback handler         │
+│  LangSmith Bridge (opt-in fanout) │────▶│  - Anthropic adapter                  │
+│                                   │     │  - OpenAI adapter                     │
+│  Adapters:                        │     │  - LangChain callback handler         │
+│  anthropic, openai, langchain     │     │  - LangSmith (via langsmith.ts)       │
 └───────────────────────────────────┘     └───────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                Workflow Service (apps/workflows)                     │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  DAG Workflow Engine (Restate-backed `restate.workflow`)        │  │
+│  │                                                                 │  │
+│  │  load definition → validate DAG (cycles/orphans) →              │  │
+│  │  topological levels → execute ready nodes in parallel →         │  │
+│  │  join on parents → evaluate edge conditions → next level        │  │
+│  │                                                                 │  │
+│  │  Node executors: llm · api · approval · condition ·             │  │
+│  │                  transform · parallel                           │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  PostgreSQL (shared schema): WorkflowDefinition, WorkflowExecution,  │
+│                              WorkflowTrigger                         │
+│                                                                      │
+│  Approval bridge: ApprovalTicket.restateWorkflowId / promiseName     │
+│  resolves a `ctx.promise()` in the running workflow when the         │
+│  approver decides through the regular dashboard.                     │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Request Flow
@@ -251,7 +278,7 @@ AgentOS/
 │           ├── container.ts          # DI composition root (wires repos → services)
 │           ├── app.ts               # Fastify app factory
 │           └── server.ts            # Entry point
-│   └── web/                          # React Dashboard (SPA)
+│   ├── web/                          # React Dashboard (SPA)
 │       └── src/
 │           ├── components/
 │           │   ├── layout/          # AppLayout, Sidebar, TopBar
@@ -269,6 +296,35 @@ AgentOS/
 │           ├── store/               # useAuthStore.ts (Zustand)
 │           ├── App.tsx              # Router + providers
 │           └── main.tsx             # Entry point
+│   └── workflows/                    # Restate-backed DAG workflow service (v2.4)
+│       └── src/
+│           ├── workflows/
+│           │   ├── dag-engine.ts            # restate.workflow — validates DAG,
+│           │   │                            #   runs ready nodes per level in
+│           │   │                            #   parallel, evaluates edge conditions
+│           │   └── legacy/                  # Older sequential `steps` engine
+│           ├── executors/
+│           │   ├── node-executor.ts         # Dispatches a DAG node by `type`
+│           │   └── step-executor.ts         # Legacy sequential step dispatcher
+│           ├── types/
+│           │   ├── workflow-dag.ts          # DAG schema: nodes/edges + Zod
+│           │   └── workflow-definition.ts   # Legacy step schema
+│           ├── utils/
+│           │   ├── dag-validation.ts        # Cycle/orphan detection,
+│           │   │                            #   in-degree, child traversal
+│           │   ├── workflow-registry.ts     # Prisma-backed CRUD (no in-mem cache)
+│           │   ├── anthropic.ts             # `callClaude(...)` client
+│           │   ├── cost-calculator.ts       # Per-model USD calc
+│           │   └── agentos-client.ts        # Calls back to API for policy /
+│           │                                #   approval / audit
+│           ├── examples/
+│           │   ├── workflow-definitions-dag.ts  # 3 pre-seeded DAGs
+│           │   └── workflow-definitions.ts      # Legacy examples
+│           ├── config/
+│           │   ├── env.ts                   # Zod-validated env
+│           │   ├── database.ts              # Prisma client
+│           │   └── seed.ts                  # System user/agent on boot
+│           └── server.ts                    # Restate endpoint entry (PORT 9080)
 ├── packages/
 │   ├── types/                       # Shared Zod schemas + TS types
 │   │   └── src/
@@ -285,11 +341,15 @@ AgentOS/
 │           ├── EventBuffer.ts       # Non-blocking batch event flushing
 │           ├── SpanManager.ts       # Hierarchical trace span management
 │           ├── CircuitBreaker.ts    # Platform resilience (retry + circuit-break)
+│           ├── langsmith.ts         # Opt-in LangSmith fanout bridge (v2.4)
+│           │                        #   — own EventBuffer + CircuitBreaker,
+│           │                        #     redaction, payload capping
 │           ├── adapters/
 │           │   ├── anthropic.ts     # Automatic governance for Anthropic SDK
 │           │   ├── openai.ts        # Automatic governance for OpenAI SDK
 │           │   └── langchain.ts     # LangChain callback handler for auto-logging
 │           ├── GovernanceClient.test.ts
+│           ├── langsmith.test.ts    # Unit tests for the bridge (v2.4)
 │           └── index.ts
 ├── specs/                           # Feature specifications
 │   ├── 005-approval-workflows/
@@ -319,24 +379,34 @@ AgentOS/
 | `AgentStatus` | `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `ACTIVE`, `SUSPENDED`, `DEPRECATED` |
 | `ApprovalStatus` | `PENDING`, `APPROVED`, `DENIED`, `EXPIRED`, `AUTO_APPROVED` |
 | `PolicyEffect` | `ALLOW`, `DENY`, `REQUIRE_APPROVAL` |
+| `WorkflowStatus` *(v2.4)* | `DRAFT`, `ACTIVE`, `INACTIVE`, `ARCHIVED` (lifecycle of a `WorkflowDefinition`) |
+| `TriggerType` *(v2.4)* | `MANUAL`, `SCHEDULED`, `WEBHOOK`, `EVENT` |
+| `WorkflowExecutionStatus` *(v2.4)* | `PENDING`, `RUNNING`, `SUSPENDED` *(awaiting approval / external)*, `COMPLETED`, `FAILED`, `CANCELLED` |
 
 ### Entity Relationship Diagram
 
 ```
-User ──────────────────┐
-  │                    │ (resolvedBy)
-  │                    ▼
-  │              ApprovalTicket
-  │                    ▲
-  │                    │ (agent)
-  │    ┌───────────────┤
-  │    │               │
-  │    ▼               │
-  │  Agent ────────── AuditLog
-  │    │
-  │    ├── AgentTool
-  │    │
-  │    └── AgentPolicy ──── Policy ──── PolicyRule
+User ────────────────────────────────┐
+  │ (resolvedBy)                     │ (createdBy)
+  │                                  ▼
+  │                  ┌──── WorkflowDefinition ──── WorkflowTrigger
+  │                  │              │
+  │                  │              ▼
+  │                  │       WorkflowExecution
+  │                  │              ▲
+  │                  │              │
+  │              Agent ─────────────┤
+  │              │ │ │ │
+  │              │ │ │ └── AuditLog (langsmithRunId)
+  │              │ │ │
+  │              │ │ └──── ApprovalTicket (restateWorkflowId →
+  │              │ │                       resolves a workflow promise)
+  │              │ │
+  │              │ └── AgentTool
+  │              │
+  │              └── AgentPolicy ──── Policy ──── PolicyRule
+  │
+  └──> resolves ApprovalTicket
 ```
 
 ### Models
@@ -370,6 +440,8 @@ User ──────────────────┐
 | budgetUsd | Float? | Rolling 30-day spend cap in USD; enforced server-side on audit ingest *(v2.2)* |
 | apiKeyHash | String? | HMAC-SHA256 of the agent's API key (full key never stored) *(v2.1)* |
 | apiKeyHint | String? | Last 4 characters of the API key, shown in the dashboard *(v2.1)* |
+| langsmithEnabled | Boolean | Default false. When true, the SDK forwards LLM telemetry for this agent to LangSmith *(v2.4)* |
+| langsmithProject | String? | LangSmith project name to group runs under *(v2.4)* |
 
 #### AgentTool
 | Field | Type | Notes |
@@ -399,9 +471,11 @@ User ──────────────────┐
 | success | Boolean | Default true |
 | errorMsg | String? | Error details |
 | metadata | Json? | Arbitrary metadata |
+| langsmithRunId | String? | LangSmith run ID this event was also reported to *(v2.4)* |
+| langsmithProject | String? | LangSmith project name *(v2.4)* |
 | createdAt | DateTime | Auto-set |
 
-**Indexes**: `agentId`, `traceId`, `createdAt`, `event`, `spanId` *(v2)*
+**Indexes**: `agentId`, `traceId`, `createdAt`, `event`, `spanId` *(v2)*, `langsmithRunId` *(v2.4 — reverse lookup from a LangSmith run back to the AgentOS audit row)*
 
 #### ApprovalTicket
 | Field | Type | Notes |
@@ -417,9 +491,11 @@ User ──────────────────┐
 | resolvedAt | DateTime? | When resolved |
 | expiresAt | DateTime | Auto-expire deadline |
 | slackMsgTs | String? | Slack message timestamp |
+| restateWorkflowId | String? | If this ticket gates a Restate-backed workflow, the workflow invocation ID. Resolving the ticket fires the corresponding promise *(v2.4)* |
+| restatePromiseName | String? | Name of the `ctx.promise()` to resolve when the human decides *(v2.4)* |
 | createdAt | DateTime | Auto-set |
 
-**Indexes**: `status`, `agentId`
+**Indexes**: `status`, `agentId`, `restateWorkflowId` *(v2.4)*
 
 #### Policy
 | Field | Type | Notes |
@@ -445,6 +521,79 @@ User ──────────────────┐
 |-------|------|-------|
 | agentId | String | Composite PK |
 | policyId | String | Composite PK |
+
+#### WorkflowDefinition *(v2.4)*
+| Field | Type | Notes |
+|-------|------|-------|
+| id | String (UUID) | Primary key |
+| name | String | Workflow name |
+| description | String? | |
+| version | String | Default `1.0.0` |
+| status | WorkflowStatus | Default `DRAFT` |
+| definition | Json | Full workflow body. DAG form: `{ dag: { nodes, edges }, ... }`. Legacy sequential form: `{ steps: [...] }` |
+| isDag | Boolean | `true` for DAG format, `false` for legacy sequential |
+| entryNodeId | String? | Required for DAGs — which node to start at |
+| inputSchema | Json? | JSON Schema validating workflow input |
+| outputSchema | Json? | JSON Schema for output |
+| agentId | String | FK → Agent — which agent owns this workflow |
+| createdBy | String | FK → User |
+| tags | String[] | Searchable tags |
+| maxCostUsd | Decimal(10,4)? | Per-execution cost cap; the engine aborts the run if exceeded |
+| maxDurationMs | Int? | Per-execution time cap |
+| executionCount | Int | Stats counter |
+| successCount | Int | Stats counter |
+| failureCount | Int | Stats counter |
+| createdAt | DateTime | Auto-set |
+| updatedAt | DateTime | Auto-updated |
+
+**Indexes**: `agentId`, `status`, `createdBy`, `isDag`
+
+#### WorkflowTrigger *(v2.4)*
+| Field | Type | Notes |
+|-------|------|-------|
+| id | String (UUID) | Primary key |
+| workflowDefinitionId | String | FK → WorkflowDefinition (cascade delete) |
+| name | String | Trigger name |
+| type | TriggerType | `MANUAL` / `SCHEDULED` / `WEBHOOK` / `EVENT` |
+| enabled | Boolean | Default true |
+| cronExpression | String? | For `SCHEDULED` triggers |
+| timezone | String? | Default `UTC` |
+| webhookSecret | String? | For `WEBHOOK` triggers |
+| webhookUrl | String? | Unique. For `WEBHOOK` triggers |
+| eventType | String? | For `EVENT` triggers |
+| eventFilter | Json? | Matcher expression for `EVENT` triggers |
+| defaultInput | Json? | Default input merged into invocation payload |
+| inputOverrides | Json? | Per-trigger overrides |
+| lastTriggeredAt | DateTime? | Bookkeeping |
+| triggerCount | Int | Bookkeeping |
+| createdBy | String | FK → User |
+| createdAt | DateTime | Auto-set |
+| updatedAt | DateTime | Auto-updated |
+
+**Indexes**: `workflowDefinitionId`, `(type, enabled)`, `eventType`
+
+#### WorkflowExecution *(v2.4)*
+| Field | Type | Notes |
+|-------|------|-------|
+| id | String (UUID) | Primary key |
+| workflowId | String | Unique. The Restate workflow key (one Restate invocation → one row) |
+| workflowDefinitionId | String | FK → WorkflowDefinition |
+| triggerId | String? | FK → WorkflowTrigger (nullable; manual invocations have none) |
+| agentId | String | FK → Agent |
+| traceId | String | Same `traceId` shape as `AuditLog` — lets the dashboard pivot from an audit row to a workflow run |
+| status | WorkflowExecutionStatus | Default `PENDING` |
+| input | Json | Original invocation input |
+| output | Json? | Final output (when COMPLETED) |
+| error | String? | Failure message |
+| steps | Json? | Array of step/node status snapshots |
+| startedAt | DateTime | Auto-set |
+| completedAt | DateTime? | When status moves to a terminal state |
+| durationMs | Int? | Computed at completion |
+| totalCostUsd | Decimal(10,6)? | Sum of all `llm` node costs in this run |
+| restateInvocationId | String? | Restate's internal ID, for cross-referencing the admin API |
+| restateDeploymentId | String? | Restate deployment ID |
+
+**Indexes**: `workflowDefinitionId`, `status`, `startedAt`, `agentId`, `traceId`
 
 ---
 
@@ -1675,6 +1824,21 @@ All responses include security headers via `@fastify/helmet`:
 | `SLACK_CHANNEL_ID` | — | Slack channel for notifications |
 | `ANTHROPIC_API_KEY` | — | Required for showcase agents only |
 | `SSE_SECRET` | (auto-generated default) | SSE token signing secret (min 32 chars) *(FIX-03)* |
+| `LANGSMITH_API_KEY` | — | Used by SDK consumers (passed to `GovernanceClient`'s `langsmith.apiKey`). Not required by the API itself. *(v2.4)* |
+| `LANGSMITH_BASE_URL` | `https://api.smith.langchain.com` | Self-hosted LangSmith endpoint override *(v2.4)* |
+
+### Workflow Service Variables (`apps/workflows/.env`) *(v2.4)*
+
+| Variable | Default | Required |
+|----------|---------|----------|
+| `DATABASE_URL` | — | Yes (shared schema with `apps/api`) |
+| `RESTATE_URL` | `http://localhost:8080` | Yes |
+| `AGENTOS_API_URL` | `http://localhost:3000` | Yes (callbacks from `api`/`approval` nodes) |
+| `ANTHROPIC_API_KEY` | — | Required for any DAG that uses an `llm` node |
+| `OPENAI_API_KEY` | — | Optional (executor is currently a placeholder) |
+| `PORT` | `9080` | No — Restate endpoint port |
+| `NODE_ENV` | `development` | No |
+| `LOG_LEVEL` | `info` | No |
 
 ### Seed Data
 
@@ -2038,7 +2202,150 @@ The project follows 8 non-negotiable principles defined in the constitution:
 | **apiKeyHint** | Last 4 characters of an agent's API key, persisted alongside the HMAC hash and shown on the dashboard *(v2.1)* |
 | **autoShutdown** | `GovernanceClientConfig.autoShutdown` — when true, the SDK installs `beforeExit`/`SIGINT`/`SIGTERM` handlers to flush the buffer before the process exits *(v2.1)* |
 | **sseConnectTimeoutMs** | How long the SDK waits for an SSE-pushed approval before falling back to HTTP polling. Default 2_500 ms *(v2.3)* |
+| **DAG Workflow Engine** | The Restate-backed `restate.workflow('DAGWorkflowEngine')` in `apps/workflows/src/workflows/dag-engine.ts`. Validates the DAG, computes topological levels, executes ready nodes in parallel, joins on parents, and evaluates edge conditions *(v2.4)* |
+| **Workflow Definition** | A row in `WorkflowDefinition` containing `{ definition: { dag: { nodes, edges } }, entryNodeId, constraints }`. Workflows-as-data — adding a new one is an insert, not a deploy *(v2.4)* |
+| **Workflow Execution** | A row in `WorkflowExecution` capturing one run of a `WorkflowDefinition` — status, cost, duration, Restate invocation ID, and node-level status *(v2.4)* |
+| **Restate Promise Bridge** | `ApprovalTicket.restateWorkflowId` + `restatePromiseName` — connect the existing approval dashboard to a suspended DAG `approval` node so resolving the ticket resumes the workflow *(v2.4)* |
+| **LangSmith Bridge** | `createLangSmithBridge(config)` in `packages/governance-sdk/src/langsmith.ts`. Mints a shared `langsmithRunId` before each LLM call, posts to LangSmith on a fully isolated `EventBuffer` + `CircuitBreaker`. Enabled per-`GovernanceClient` via the `langsmith` config block *(v2.4)* |
 
 ---
 
-*Document generated from codebase analysis on 2026-03-21. Updated 2026-04-05 with SDK v2 enhancements. Updated 2026-04-27 with v2.1 → v2.3 hardening: per-trace IDs, EventBuffer requeue + auto-shutdown, public `ticketId` on `PolicyDeniedError`, `/policies/check` agent-API-key auth, dashboard "Rotate API key" workflow, server-side rolling 30-day budgets (HTTP 402), batched `findInfoByIds`, `ApprovalRequestError`, structured error envelope, `InvalidCredentialsError`, `span_failed` events, per-route `CircuitBreakerRegistry` + full-jitter exponential backoff, `gov.getMetrics()`, configurable `sseConnectTimeoutMs`, lazy `eventsource` polyfill, OpenAI/Anthropic streaming + embeddings adapters, JSDoc on all SDK public methods, end-to-end streaming demo in `researchAgent`. Covers EPICs 2, 4, 5, 6, 7, 8 + FIX-01 (Repository Pattern) + FIX-02 (Error Hierarchy) + FIX-03 (Security Headers) + FIX-04 (N+1 Fix) + FIX-05 (API Versioning) + SDK v2 (Provider-Agnostic Core, EventBuffer, SpanManager, CircuitBreaker, Policy Gate, Cost Budgets, Streaming, Framework Adapters) + v2.1 → v2.3 hardening.*
+## 23. Workflow Service — Durable DAG Execution (EPIC 9 / spec 015)
+
+The `apps/workflows` service is a standalone Node process that runs **user-defined Directed Acyclic Graphs** as durable executions on top of [Restate](https://restate.dev). It complements — does not replace — the SDK: the SDK governs an agent's *in-process* LLM and tool calls; the workflow service governs *multi-step, cross-process, long-running* agent processes that must survive crashes, restarts, and multi-day human approval delays.
+
+### 23.1 Why a Separate Service
+
+| Concern | SDK (`packages/governance-sdk`) | Workflow Service (`apps/workflows`) |
+|---------|---------------------------------|-------------------------------------|
+| Lifetime of one operation | Seconds to a few minutes | Seconds to days/weeks |
+| Crash semantics | Best-effort buffer flush on `SIGTERM` | Durable replay from last completed node (Restate journal) |
+| Where logic lives | Application code | A `WorkflowDefinition` row (JSON DAG) |
+| Approval wait | In-process `await` against SSE/polling | `ctx.promise()` — workflow suspends; no resource use while waiting |
+| Parallelism | Whatever the host process does | DAG engine runs all ready nodes per level in parallel |
+
+### 23.2 Engine Architecture
+
+`src/workflows/dag-engine.ts` is a `restate.workflow` whose single `run` handler does:
+
+1. **Load** the `WorkflowDefinition` from PostgreSQL through `getWorkflowDefinition(id)`, wrapped in `ctx.run('load_workflow_definition', ...)` so the load itself is journaled.
+2. **Validate** the DAG with `validateDAG(dag, entryNodeId)` — catches cycles, orphans, unreachable nodes, dangling edges.
+3. **Initialize** an execution context that merges the caller-supplied input with built-ins (`_agentId`, `_traceId`, `_workflowId`, `_definitionId`, `_apiUrl`).
+4. **Execute level by level.**
+   - Compute initial ready set = nodes with in-degree 0 starting from `entryNodeId`.
+   - For each level, dispatch ready nodes in parallel via `Promise.all([executeNode(...)])`. Each node runs inside its own `ctx.run(nodeId, ...)` so it becomes a journaled step Restate can replay.
+   - On node success, record output into the execution context under `<nodeId>` (`{{nodeId.output}}` is then available to downstream interpolation).
+   - **Edge condition evaluation.** Each outgoing edge may carry a `condition` expression. The engine evaluates the expression against the live context to decide whether the child is enabled. Only children whose enabling edges fire receive a parent completion.
+   - **Join semantics.** A child becomes ready only when **all** its parents (that actually contributed an enabling edge) have completed.
+   - On node failure, mark it failed and skip dependents (the workflow status becomes `FAILED`).
+5. **Cost cap.** After every `llm` node the engine adds `totalCost` and aborts with `FAILED` if it crosses `constraints.maxCostUsd` (default $10).
+6. **Persist.** A `WorkflowExecution` row is upserted on start and on terminal status. `restateInvocationId` is captured for cross-referencing the Restate admin API.
+
+### 23.3 Node Types
+
+Defined in `src/types/workflow-dag.ts`, dispatched by `src/executors/node-executor.ts`:
+
+| Type | What it does | Notes |
+|------|--------------|-------|
+| `llm` | Calls an LLM with interpolated prompts. | Anthropic via `callClaude(...)` is implemented; OpenAI is a placeholder. Output `{content, usage, costUsd}` is added to context and the run cost is incremented. |
+| `api` | Issues an HTTP request with templated URL/headers/body. | Used to call back into the AgentOS API (policy check, approval ticket creation, audit ingest, generic webhooks). |
+| `approval` | Creates an `ApprovalTicket` then `await ctx.promise()`. | Durable. The ticket carries `restateWorkflowId` and `restatePromiseName`; resolving the ticket through the dashboard resolves the Restate promise and the workflow resumes here. Optional `riskThreshold` auto-approves low-risk actions. |
+| `condition` | Evaluates a boolean expression against the context. | Returns the boolean; *edge* conditions drive routing — node-level conditions are mainly bookkeeping. |
+| `transform` | Pure data shaping inside the workflow. | E.g. flatten parallel sibling outputs into a single object for a downstream node. |
+| `parallel` | Marker node; the engine itself runs siblings in parallel regardless. | Useful as a visible fan-out point in builder UIs. |
+
+### 23.4 Variable Interpolation
+
+Every string field in a node's config supports `{{...}}` substitution:
+
+- `{{taskName}}` — direct workflow input
+- `{{nodeId.output.field}}` — output of an upstream node
+- `{{_agentId}}`, `{{_traceId}}`, `{{_apiUrl}}`, `{{_workflowId}}`, `{{_definitionId}}` — built-ins
+
+### 23.5 Approval Bridge
+
+When an `approval` node executes:
+
+1. The node POSTs to `${_apiUrl}/api/v1/approvals` to create an `ApprovalTicket` whose `restateWorkflowId` and `restatePromiseName` point back at the running workflow.
+2. The node calls `await ctx.promise<ApprovalDecision>(restatePromiseName)`. Restate suspends the workflow.
+3. A human approves/denies the ticket via the regular dashboard. The API resolves the named promise via Restate's admin endpoints.
+4. The workflow resumes from the suspended `await` with the decision and continues the DAG.
+
+This means **every existing UI surface for approvals — dashboard list, SSE updates, Slack notifications, expiration worker — works unchanged** for workflow-initiated approvals.
+
+### 23.6 Persistence Model
+
+`apps/workflows` does **not** maintain a separate Prisma schema. It imports the shared schema from `apps/api/prisma/schema.prisma` and uses:
+
+- `WorkflowDefinition` — the DAG, owner agent, version, status, stats, cost/duration constraints.
+- `WorkflowTrigger` — invocation rules (`MANUAL`, `SCHEDULED`, `WEBHOOK`, `EVENT`).
+- `WorkflowExecution` — one row per Restate invocation, with `traceId` matching the `AuditLog` shape so the dashboard can pivot between an audit event and the workflow run that produced it.
+
+Three example DAGs (`emailApprovalDAG`, `parallelChecksDAG`, `conditionalRoutingDAG` in `src/examples/workflow-definitions-dag.ts`) are upserted on service boot via `src/config/seed.ts`.
+
+### 23.7 Configuration
+
+| Env var | Purpose |
+|---------|---------|
+| `DATABASE_URL` | Shared Postgres (same instance as API) |
+| `RESTATE_URL` | Restate runtime ingress (default `http://localhost:8080`) |
+| `AGENTOS_API_URL` | Base URL for callbacks (`api`/`approval` nodes) |
+| `ANTHROPIC_API_KEY` | Required to use the `llm` node type |
+| `PORT` | Restate endpoint port (default `9080`) |
+| `NODE_ENV`, `LOG_LEVEL` | Standard |
+
+After starting Restate and the workflow service, register the deployment once: `POST http://localhost:9070/deployments {"uri": "http://<host>:9080", "force": true}`.
+
+### 23.8 Status
+
+Engine, persistence, and approval bridge are live. A REST CRUD surface for `WorkflowDefinition` and a dashboard page for execution visualization are tracked in `specs/015-restate-durable-execution/` (`UI_WORKFLOW_BUILDER.md`, `tasks.md`).
+
+---
+
+## 24. LangSmith Fanout (Opt-In Observability)
+
+AgentOS owns governance — policy gating, audit log, cost ledger, approval workflows — and intends to remain the source of truth for those concerns. [LangSmith](https://smith.langchain.com) is best-in-class for prompt-level run inspection. v2.4 adds a built-in bridge that lets the same `wrapLLMCall` invocation be observed in *both* systems with a single shared run ID, without coupling the two pipelines.
+
+### 24.1 Design Goals
+
+| Goal | How it's met |
+|------|--------------|
+| Opt-in per client | Pass `langsmith: { apiKey, projectName, ... }` to `new GovernanceClient(...)`. Omit it and the LangSmith code path is never touched (zero overhead). |
+| Pipeline isolation | The bridge instantiates its **own** `EventBuffer` and `CircuitBreaker`. A LangSmith outage cannot back-pressure or fail the AgentOS audit pipeline. |
+| Privacy by construction | `redact` strips configured fields before fanout; `maxPayloadBytes` caps payload size; `metadataOnly: true` sends just timing/model/cost — no prompts or completions. Error messages are scrubbed before crossing the boundary. |
+| Deep linking | The bridge mints `langsmithRunId` **before** the LLM call. The same ID is attached to the AgentOS `llm_call` audit event (`AuditLog.langsmithRunId`, indexed) and posted to LangSmith. Dashboard renders a "View in LangSmith" badge. |
+| Operator control | `Agent.langsmithEnabled` and `Agent.langsmithProject` let operators flip individual agents on/off and route them to different LangSmith projects without code changes. |
+
+### 24.2 Public Surface
+
+`packages/governance-sdk/src/langsmith.ts` exports:
+
+- `createLangSmithBridge(config: LangSmithConfig): LangSmithBridge`
+- `LangSmithBridge` interface — `{ project, mintRunId(), recordLLM(record), shutdown(), getMetrics() }`
+- `LangSmithConfig` — `{ apiKey, projectName, baseUrl?, redact?, maxPayloadBytes?, metadataOnly? }`
+- `LangSmithRunRecord` — structured input for `recordLLM(...)` (run ID, name, inputs/outputs/error, start/end times, metadata)
+- `LangSmithBridgeMetrics` — counters surfaced through `gov.getMetrics().langsmith`
+
+Wired into `GovernanceClient.ts` (constructor instantiates `langsmithBridge` when `config.langsmith` is present; both `wrapLLMCall` and `wrapLLMStream` call `mintRunId` → `recordLLM`). `shutdown()` flushes both buffers.
+
+### 24.3 Configuration & Env
+
+The bridge itself takes its API key from the `langsmith.apiKey` config field — not an env var — so secrets stay scoped to the constructing app. Convention is to read `process.env.LANGSMITH_API_KEY` at agent startup and pass it in. `LANGSMITH_BASE_URL` (default `https://api.smith.langchain.com`) is honored for self-hosted LangSmith deployments.
+
+### 24.4 Status & Roadmap
+
+Plan in `docs/plans/LANGSMITH_INTEGRATION_PLAN.md`:
+
+| Phase | Status |
+|-------|--------|
+| P0 — SSE filtering hardening | Done |
+| P1 — Schema columns (`Agent.langsmith*`, `AuditLog.langsmith*`) | Done |
+| P2 — Dual-callback docs | Pending |
+| P3 — SDK fanout (`langsmith.ts` + GovernanceClient wiring) | Done |
+| P4 — Background worker for ID reconciliation | Pending |
+| P5 — Dashboard polish (deep-link badge, project filter) | Partial (badge done) |
+| P6 — Production hardening (retries, observability of the bridge itself) | Pending |
+
+---
+
+*Document generated from codebase analysis on 2026-03-21. Updated 2026-04-05 with SDK v2 enhancements. Updated 2026-04-27 with v2.1 → v2.3 hardening. Updated 2026-05-28 (v2.4) with: the `apps/workflows` Restate-backed DAG workflow service (engine, persistence, six node types, durable approval bridge, three pre-seeded example DAGs); new Prisma models `WorkflowDefinition`, `WorkflowTrigger`, `WorkflowExecution`; Restate bridge fields on `ApprovalTicket`; and the opt-in LangSmith fanout (SDK `langsmith.ts`, `Agent.langsmith*` / `AuditLog.langsmith*` columns, dashboard deep-link badge, `GovernanceClient` constructor wiring).*

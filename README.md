@@ -17,45 +17,9 @@ AgentOS sits between your AI agents and the actions they take. Every agent must 
 3. **Escalates risky actions to humans** — if a policy says "require approval", the action is paused and a human reviewer is notified via SSE push and Slack
 4. **Tracks all costs and usage** — with per-agent budget limits and real-time spend tracking
 5. **Works with any LLM provider** — Anthropic, OpenAI, Ollama, or any custom model via a provider-agnostic SDK
+6. **Runs durable, multi-step workflows** — long-running agent processes defined as data, surviving crashes and multi-day human approval waits
 
 Think of it as **an ops control plane for AI agents** — the same way you'd use Datadog for servers or a CI/CD pipeline for deployments, AgentOS gives you visibility and control over your AI agents.
-
----
-
-## What's New (v2.1 → v2.3)
-
-The platform has gone through three rounds of post-v2 hardening. The changes are grouped by what they protect against:
-
-**Stop losing money** *(v2.2)*
-- **Server-side budgets.** Each agent can carry a `budgetUsd` cap. The audit ingest path (`/api/v1/audit/log`, `/api/v1/audit/batch`) sums the agent's last 30 days of spend on every write and returns HTTP **402 `BUDGET_EXCEEDED`** the moment the cap would be crossed. The SDK silently drops the rejected batch (the action already happened — only the receipt was refused) and the dashboard receives an `agent.budget_exceeded` SSE event.
-- **No more N+1 on audit ingest.** Batches now use `IAgentRepository.findInfoByIds` to pre-validate every agent (existence, status, budget) in a single query, regardless of batch size.
-
-**Stop losing events** *(v2.1)*
-- **EventBuffer requeue + exponential backoff** on every flush failure, capped at `bufferMaxFlushAttempts` (default 5). Survivors are pushed back onto the queue rather than dropped on the floor.
-- **Auto-flush on shutdown.** `beforeExit` / `SIGINT` / `SIGTERM` trigger a best-effort drain — no more "the last 8 LLM calls vanished because the script exited" surprises.
-- **Per-trace IDs.** `gov.withTrace(fn)` runs each request under a fresh `traceId` via `AsyncLocalStorage`, so a single long-lived `GovernanceClient` instance shared by an HTTP server no longer pins every request to the same trace.
-
-**Stop pattern-matching error messages** *(v2.1 + v2.2)*
-- `PolicyDeniedError` now exposes **public** `ticketId` and `kind` (`POLICY` / `APPROVAL_DENIED` / `APPROVAL_EXPIRED` / `APPROVAL_TIMEOUT`).
-- **`ApprovalRequestError`** is the new typed error for transport / auth / 4xx / 5xx failures during the approval **request itself** — distinct from a real human "deny". `kind` discriminates `NETWORK` / `AUTH` / `FORBIDDEN` / `NOT_FOUND` / `RATE_LIMITED` / `SERVER` / `INVALID_RESPONSE` / `UNKNOWN`.
-- The login route now throws `InvalidCredentialsError` (`401 INVALID_CREDENTIALS`) for both unknown emails and wrong passwords — preventing user enumeration.
-- Every API error now follows a single envelope: `{ error: <CODE>, message, details?, requestId }`. Status codes were tightened (`404` for missing resources, `409` for state conflicts) — the test suite was updated alongside the schema.
-
-**Stop one bad endpoint from breaking everything** *(v2.3)*
-- **Per-route circuit breaker.** A failing `/audit/batch` no longer trips the breaker on `/policies/check` — `CircuitBreakerRegistry` keys breakers by `host|first-path-segment` so each route fails independently.
-- **Full-jitter exponential backoff** on retries, capped at `retryMaxMs` (default 30s). Stops thundering-herd retry storms when many clients hit the same outage.
-- **Failed spans are tagged.** `withSpan(name, fn)` now emits a `span_failed` event with the span name, latency, and error message on rejection — so the TraceDrawer can render a "Failed" badge instead of forcing a human to inspect every child event.
-
-**Better SDK ergonomics** *(v2.3)*
-- **`gov.getMetrics()`** — O(1) snapshot of cost, buffer pressure, and per-route breaker state. Wire it to a `/healthz` endpoint or a Prometheus exporter.
-- **Configurable `sseConnectTimeoutMs`** (default `2_500`). The SDK falls back from SSE push to HTTP polling much faster when proxies silently drop the long-lived connection.
-- **Lazy `eventsource` polyfill.** No longer hard-required: the SDK uses the global `EventSource` if present (Node 22+, browsers), warns once and falls back to polling otherwise. Listed under `peerDependenciesMeta` as optional.
-- **Broader adapters.** Anthropic now exposes `streamMessage(...)`. OpenAI now exposes `streamChatCompletion(...)` and `createEmbedding(...)`. The streaming code path is exercised end-to-end by the **Research Agent** showcase, not just by unit tests.
-- **JSDoc** on every public SDK method — IDE hover docs explain *when* to reach for each helper, not just its type signature.
-
-**Better dashboard signals**
-- The Agent Detail page now has an **admin-only "Rotate API key"** button. The full key is shown exactly once; subsequent loads only show the last-four `apiKeyHint`.
-- Trace tree view shows per-span "Failed (latency)" badges and the underlying error message (driven by the new `span_failed` events).
 
 ---
 
@@ -108,7 +72,7 @@ Every AI agent in your organization is registered with:
 - **Tool declarations** — what tools the agent can use (e.g., `send_email`, `query_db`, `web_search`)
 - **Cost budget** — optional `budgetUsd` rolling 30-day spend cap, enforced server-side
 - **Lifecycle status** — agents move through DRAFT → ACTIVE → SUSPENDED → DEPRECATED
-- **Dedicated API key** — each agent has its own HMAC-SHA256-hashed API key. Admins can rotate it from the agent detail page; only a `apiKeyHint` (last 4 chars) is ever returned afterwards. The full key is shown exactly once, on creation or rotation.
+- **Dedicated API key** — each agent has its own HMAC-SHA256-hashed API key. Admins can rotate it from the agent detail page; only an `apiKeyHint` (last 4 chars) is ever returned afterwards. The full key is shown exactly once, on creation or rotation.
 
 This gives you a single inventory of every AI agent, who owns it, what it can do, how risky it is, and how much it's allowed to spend.
 
@@ -118,10 +82,11 @@ Every action an agent takes is logged non-blockingly via the `EventBuffer`:
 - **LLM calls** — which provider, model, input/output tokens, cost in USD, latency in ms, success/failure
 - **Tool calls** — which tool, inputs, outputs, latency, success/failure
 - **Approval events** — when approval was requested, who approved/denied, reasoning
+- **Span failures** — a failed `withSpan` step emits a dedicated `span_failed` event carrying the span name, latency, and error message
 
-Events are grouped into **traces** (a single agent session) and organized into **hierarchical span trees** via `spanId` / `parentSpanId`. The TraceDrawer in the dashboard renders these as nested tree views — e.g., a parent "research-workflow" span containing child "llm-call" and "web-search" spans. You can filter by agent, event type, date range, or search by trace ID. Admins can export logs as CSV.
+Events are grouped into **traces** (a single agent session) and organized into **hierarchical span trees** via `spanId` / `parentSpanId`. The TraceDrawer in the dashboard renders these as nested tree views — e.g., a parent "research-workflow" span containing child "llm-call" and "web-search" spans, with "Failed (3.2s)" badges on any span that errored. You can filter by agent, event type, date range, or search by trace ID. Admins can export logs as CSV.
 
-### 3. GovernanceClient SDK (v2 — Provider-Agnostic)
+### 3. GovernanceClient SDK (Provider-Agnostic)
 
 The SDK is how AI agents integrate with AgentOS. It's **provider-agnostic** — it works with Anthropic, OpenAI, Ollama, or any LLM accessible over HTTP — and is designed so the agent code reads like normal application code while the SDK silently captures every step.
 
@@ -136,12 +101,14 @@ The SDK is how AI agents integrate with AgentOS. It's **provider-agnostic** — 
 | `withSpan(name, fn)` | Wrap a logical step so all events inside share a `spanId`; failures emit a dedicated `span_failed` event |
 | `withTrace(fn, traceId?)` | Run a request inside its own trace context (per-request isolation on a long-lived client) |
 | `logEvent(payload)` | Non-blocking ad-hoc audit event |
-| `getMetrics()` | Snapshot of cumulative cost, buffer pressure, and per-route circuit-breaker state — for `/healthz`, Prometheus, or debug dumps |
-| `shutdown()` | Best-effort flush; fires automatically on `beforeExit` / `SIGINT` / `SIGTERM` |
+| `getMetrics()` | O(1) snapshot of cumulative cost, buffer pressure, per-route circuit-breaker state, and (if enabled) the LangSmith bridge buffer/breaker state — for `/healthz`, Prometheus, or debug dumps |
+| `shutdown()` | Best-effort flush of both audit and LangSmith buffers; fires automatically on `beforeExit` / `SIGINT` / `SIGTERM` |
+
+**Optional LangSmith fanout.** Pass `langsmith: { apiKey, projectName, redact?, maxPayloadBytes?, metadataOnly? }` to the constructor and every `wrapLLMCall` / `wrapLLMStream` is *also* posted to LangSmith with a shared `langsmithRunId`. The bridge runs on its own `EventBuffer` + `CircuitBreaker` so a LangSmith outage cannot back-pressure the AgentOS audit pipeline. See [section 10](#10-langsmith-observability-opt-in).
 
 #### Typed errors
 
-Catch by type — never by string-matching error messages.
+Catch by type — never by string-matching error messages. The SDK exports type-guards `isPolicyDeniedError(err)` and `isApprovalRequestError(err)` so application code stays robust across module reloads and bundlers.
 
 | Error | Thrown when | Useful fields |
 |-------|-------------|---------------|
@@ -150,22 +117,21 @@ Catch by type — never by string-matching error messages.
 | `BudgetExceededError` (client) | Cumulative `wrapLLMCall` cost crossed `BudgetConfig.maxCostUsd` with `onBudgetExceeded: 'throw'` | `currentCost`, `maxCost` |
 | `BudgetExceededError` (server, HTTP 402) | Audit batch rejected because the agent's rolling 30-day spend exceeded `agents.budgetUsd` | `agentId`, `currentUsd`, `budgetUsd`, `windowDays` |
 
-The SDK exports type-guards `isPolicyDeniedError(err)` and `isApprovalRequestError(err)` so application code stays robust across module reloads and bundlers.
-
 #### Resilience & cost control
 
-- **Per-route circuit breaker.** A failing `/audit/batch` no longer takes down `/policies/check`. Each route gets its own `CircuitBreaker` keyed by host + first path segment, so one degraded endpoint can't poison the others.
+- **Per-route circuit breaker.** Each route gets its own `CircuitBreaker` keyed by host + first path segment, so a failing `/audit/batch` can't trip the breaker on `/policies/check` — one degraded endpoint can't poison the others.
 - **Exponential backoff with full jitter** between retries — caps at `retryMaxMs` (default 30s) and decorrelates retry storms across many client instances.
 - **Fail-open vs fail-closed.** Choose at construction whether agent operations should continue (with a warning) or hard-fail when the platform is unreachable.
-- **Non-blocking logging.** `EventBuffer` batches events, retries failed flushes with backoff, requeues survivors, and drops the batch only after `bufferMaxFlushAttempts` (default 5).
-- **Auto-shutdown.** On `beforeExit` / `SIGINT` / `SIGTERM` the buffer is flushed before the process dies — no more lost final batches in serverless or CLI runs.
-- **Client-side budgets** (`maxCostUsd`, `warnAtUsd`) and **server-side budgets** (`agents.budgetUsd`, enforced in the audit ingest path on a 30-day rolling window) — the server returns HTTP 402 `BUDGET_EXCEEDED` and the SDK silently drops the batch (the action already happened; only the receipt is rejected) and broadcasts `agent.budget_exceeded` over SSE so the dashboard can react.
+- **Non-blocking logging.** `EventBuffer` batches events, retries failed flushes with backoff, requeues survivors, and drops a batch only after `bufferMaxFlushAttempts` (default 5).
+- **Auto-shutdown.** On `beforeExit` / `SIGINT` / `SIGTERM` the buffer is flushed before the process dies — no lost final batches in serverless or CLI runs.
+- **Client-side budgets** (`maxCostUsd`, `warnAtUsd`) and **server-side budgets** (`agents.budgetUsd`, enforced in the audit ingest path on a 30-day rolling window). The server returns HTTP 402 `BUDGET_EXCEEDED`, the SDK silently drops the batch (the action already happened; only the receipt is rejected), and the dashboard receives an `agent.budget_exceeded` SSE event.
 
 #### Observability
 
 - **Hierarchical traces.** `withSpan(name, fn)` builds a nested `spanId` / `parentSpanId` tree that the dashboard's TraceDrawer renders as a collapsible tree view. Failed spans are tagged with a dedicated `span_failed` event so the UI can show "Failed (3.2s)" badges without scanning every child.
 - **Per-trace isolation.** `withTrace(fn)` runs each request under a fresh `traceId` even on a shared, long-lived client — essential for HTTP servers that don't construct a new SDK per request.
 - **`getMetrics()`** returns `{ cost, buffer, breakers, traceId }` in O(1) with no I/O — safe to call from a `/healthz` handler.
+- **Configurable `sseConnectTimeoutMs`** (default `2_500`). The SDK falls back from SSE push to HTTP polling quickly when proxies silently drop the long-lived connection.
 
 #### Framework adapters
 
@@ -177,17 +143,11 @@ Optional zero-config wrappers for popular SDKs. Imported as subpaths so unused a
 | `@agentos/governance-sdk/adapters/openai` | `createChatCompletion(...)`, `streamChatCompletion(...)`, and `createEmbedding(...)` |
 | `@agentos/governance-sdk/adapters/langchain` | LangChain `BaseCallbackHandler` keyed by `runId` so concurrent LLM/tool runs are tracked correctly |
 
-#### Migrating from SDK v1
-
-> **Breaking change.** SDK v2 removes the Anthropic-specific `gov.createMessage(...)` helper. Replace it with the provider-agnostic `gov.wrapLLMCall(fn, metadata)` — or the matching adapter, e.g. `createAnthropicAdapter(gov, anthropic).createMessage(...)`. `wrapLLMCall` accepts any async function and tracks tokens / cost / latency uniformly across Anthropic, OpenAI, Ollama, and custom HTTP models.
->
-> Policy enforcement also moved earlier in the lifecycle: wrap side-effectful actions in `gov.callTool(name, inputs, fn, { riskScore })` so the platform can DENY / REQUIRE_APPROVAL **before** the action runs. Detect denials with `isPolicyDeniedError(err)` and approval-pipeline failures with `isApprovalRequestError(err)` — never pattern-match error messages.
->
-> See `apps/api/src/showcase-agents/` for full v2 examples: an Anthropic adapter agent, a streaming research agent, raw `wrapLLMCall` with Ollama, and a multi-provider workflow.
+The SDK uses the global `EventSource` when present (Node 22+, browsers); the `eventsource` polyfill is an optional peer dependency, loaded lazily and falling back to polling with a single warning when absent. Every public SDK method carries JSDoc explaining *when* to reach for it, not just its type signature. For full integration examples — an Anthropic adapter agent, a streaming research agent, raw `wrapLLMCall` with Ollama, and a multi-provider workflow — see `apps/api/src/showcase-agents/`.
 
 ### 4. Policy Engine (with Pre-Execution Gating)
 
-Policies are rules that govern what agents can and cannot do. In SDK v2, policies are checked **before** a tool executes — not just at approval time. Each policy contains rules that match on two things:
+Policies are rules that govern what agents can and cannot do. Policies are checked **before** a tool executes — not just at approval time. Each policy contains rules that match on two things:
 - **Action type** — what the agent is trying to do (e.g., `send_email`, `delete_record`, or `*` for any action)
 - **Risk tier** — the agent's risk classification
 
@@ -266,13 +226,48 @@ Every agent has a **health score from 0 to 100** that gives you an at-a-glance v
 
 **Why it matters**: A dropping health score is an early warning signal. High error rates might mean the agent's prompt or tool configuration needs fixing. High denial rates suggest the agent is repeatedly attempting actions outside its intended scope — it may need tighter policies or retraining. High latency could point to upstream API throttling or model overload.
 
-### 9. Showcase Agents
+### 9. Durable Workflow Engine (`apps/workflows`)
+
+The workflow service is a separate Node process backed by **Restate** that runs **user-defined Directed Acyclic Graphs** as durable executions. It complements the SDK: where the SDK governs an agent's *in-process* LLM and tool calls, the workflow service governs *multi-step, cross-process, long-running* agent processes that need to survive crashes and human approval delays.
+
+**What it gives you**
+
+- **Workflows-as-data.** A workflow is a `WorkflowDefinition` row containing `{ dag: { nodes, edges }, entryNodeId, constraints }`. No code deploy is required to add a new workflow — insert a row.
+- **Six node types**: `llm` (Anthropic; OpenAI is a placeholder), `api` (any HTTP call), `approval` (durable human gate), `condition` (boolean branch), `transform` (data shaping), and `parallel` (a fan-out marker — the engine runs independent nodes concurrently regardless).
+- **DAG semantics.** The engine validates the graph for cycles/orphans on load, computes a topological order, and runs all ready nodes (in-degree 0) **in parallel** at each level. Children only execute once **every** parent has completed (join semantics). Conditional edges (`{ from, to, condition }`) are evaluated against the live execution context to choose downstream branches.
+- **Durable approval waits via Restate promises.** An `approval` node creates an `ApprovalTicket` with `restateWorkflowId` and `restatePromiseName`, then suspends. When a human resolves the ticket in the dashboard, the API resolves the corresponding Restate promise and the workflow resumes from exactly that node — even after process restarts or multi-day waits, with zero resource consumption while idle. This reuses the same approval queue, Slack notifications, SSE, and expiration worker the SDK uses, rather than a parallel approval UI.
+- **Variable interpolation.** `{{taskName}}`, `{{previousNode.output.field}}`, plus built-ins `{{_agentId}}`, `{{_traceId}}`, `{{_apiUrl}}`, `{{_workflowId}}` flow through every node config.
+- **Cost-bounded execution.** `constraints.maxCostUsd` (default $10) is checked after each LLM node; exceeding it fails the workflow cleanly.
+- **Persistence.** `WorkflowExecution` records track every run with `status`, `totalCostUsd`, `durationMs`, `restateInvocationId`, and a JSON `steps` array — sharing the same `traceId` shape as the audit log so a workflow run and its audit events line up.
+
+**Pre-seeded examples** (registered on service boot):
+
+- `emailApprovalDAG` — Linear: Draft (LLM) → Policy Check (API) → Approval Gate → Send (API)
+- `parallelChecksDAG` — 3 risk checks fan out in parallel → Aggregate → Decide
+- `conditionalRoutingDAG` — Risk evaluation → branch into High-Risk-Approval or Auto-Execute paths → Complete
+
+**Triggers.** A `WorkflowTrigger` row supports `MANUAL`, `SCHEDULED` (cron), `WEBHOOK`, or `EVENT`-based invocation. Manual invocation via Restate is the path wired today; scheduled / webhook / event dispatchers are schema-defined but not yet implemented. Dashboard pages for visualizing workflow executions and a DAG builder are planned — see `specs/015-restate-durable-execution/UI_WORKFLOW_BUILDER.md`.
+
+### 10. LangSmith Observability (Opt-In)
+
+The SDK can mirror every governed LLM call to [LangSmith](https://smith.langchain.com) for prompt-level debugging and trace inspection, without giving up AgentOS's policy / audit / cost layer.
+
+- **Enable per-client.** Pass `langsmith: { apiKey, projectName, baseUrl?, redact?, maxPayloadBytes?, metadataOnly? }` to `new GovernanceClient(...)`. When the block is omitted, the LangSmith code path is never touched (zero overhead).
+- **Shared `langsmithRunId`.** The bridge mints a run ID **before** the LLM call. The ID is attached to the AgentOS `llm_call` audit event and also posted to LangSmith — so each audit row deep-links to a specific LangSmith run, and vice versa. The ID is attached even when the call fails, so the link still works on error runs.
+- **Pipeline isolation.** The LangSmith bridge has its own `EventBuffer` and `CircuitBreaker`. A LangSmith outage or throttle cannot back-pressure or fail AgentOS audit ingestion.
+- **Privacy controls.** `redact` strips configured fields before fanout; `maxPayloadBytes` caps payload size; `metadataOnly: true` sends just timing / model / cost — no prompts or completions.
+- **Per-agent toggles in the DB.** `Agent.langsmithEnabled` and `Agent.langsmithProject` let operators selectively enable LangSmith for individual agents without code changes.
+- **Dashboard link-out.** `AuditLog.langsmithRunId` is indexed for reverse lookup, and the TraceDrawer renders a "View in LangSmith" badge when a run ID is present.
+
+The full integration plan is in [`docs/plans/LANGSMITH_INTEGRATION_PLAN.md`](docs/plans/LANGSMITH_INTEGRATION_PLAN.md).
+
+### 11. Showcase Agents
 
 To demonstrate the platform, AgentOS ships four end-to-end agents — each one chosen to exercise a different code path of the SDK:
 
 **Email Draft Agent** — `withSpan` hierarchical tracing + Anthropic adapter for the LLM + policy-gated `callTool` for the send action + client-side budget and resilience configured at construction.
 
-**Research Agent** — multi-step workflow with nested spans (`research-workflow` → `search` / `fetch` / `synthesize_report`) and policy-gated tool calls. **The synthesis step uses `streamMessage`**, so iterating the run from a terminal visually demonstrates streaming while `wrapLLMStream` records the final token totals once the stream closes — i.e. the streaming path is exercised end-to-end, not just by unit tests.
+**Research Agent** — multi-step workflow with nested spans (`research-workflow` → `search` / `fetch` / `synthesize_report`) and policy-gated tool calls. **The synthesis step uses `streamMessage`**, so iterating the run from a terminal visually demonstrates streaming while `wrapLLMStream` records the final token totals once the stream closes — the streaming path is exercised end-to-end, not just by unit tests.
 
 **Local Email Agent** — uses the generic `wrapLLMCall` with Ollama (a local LLM), proving the SDK works with any HTTP-based model provider without vendor SDKs.
 
@@ -296,7 +291,7 @@ The React dashboard is the primary interface for platform users.
 
 **Approval Queue** — two-column layout. Left side shows pending tickets sorted by urgency (most urgent first, pulsing red border if expiring in under 5 minutes). Right side shows recently resolved tickets. Approve or deny with a confirmation dialog. Updates in real-time as new tickets arrive.
 
-**Audit Explorer** — searchable, filterable log of every agent action. Click any row to open a trace drawer showing the full step-by-step timeline of that agent session. Export to CSV for compliance.
+**Audit Explorer** — searchable, filterable log of every agent action. Click any row to open a trace drawer showing the full step-by-step timeline of that agent session, including "Failed" badges on errored spans and a "View in LangSmith" link when present. Export to CSV for compliance.
 
 **Analytics** — interactive charts showing cost trends, approval outcomes, model usage, and an agent leaderboard. Selectable time range (7d / 30d / 90d).
 
@@ -320,32 +315,48 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 ## Architecture Overview
 
 ```
-┌───────────────────────────────────────────────────┐
-│            React Dashboard (apps/web)             │
-│  Login · Dashboard · Agents · Approvals · Audit   │
-│  Analytics · Policies                             │
-└────────────────────────┬──────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│             React Dashboard (apps/web)              │
+│  Login · Dashboard · Agents · Approvals · Audit     │
+│  Analytics · Policies                               │
+└────────────────────────┬────────────────────────────┘
                          │  HTTP + SSE
-┌────────────────────────┼──────────────────────────┐
-│          Fastify REST API (apps/api)              │
-│                        │                          │
-│  Auth · Agents · Audit · Approvals · Policies     │
-│  Analytics · Showcase                             │
-│                        │                          │
-│  Prisma (PostgreSQL) · Redis (BullMQ) · Slack     │
-└────────────────────────┼──────────────────────────┘
-                         │
-┌────────────────────────┼───────────────────────────┐
-│     GovernanceClient SDK v2 (packages/)            │
-│  Provider-agnostic: wrapLLMCall, wrapLLMStream,    │
-│  callTool, withSpan, withTrace, getMetrics         │
-│  EventBuffer (requeue + auto-flush on shutdown)    │
-│  Per-route CircuitBreaker (jittered backoff)       │
-│  Typed errors: PolicyDeniedError,                  │
-│    ApprovalRequestError, BudgetExceededError       │
-│  Adapters: Anthropic (incl. stream),               │
-│    OpenAI (chat + stream + embeddings), LangChain  │
-└────────────────────────────────────────────────────┘
+┌────────────────────────┼────────────────────────────┐
+│           Fastify REST API (apps/api)               │
+│                        │                            │
+│  Auth · Agents · Audit · Approvals · Policies       │
+│  Analytics · Events (SSE) · Showcase                │
+│                        │                            │
+│  Prisma (PostgreSQL) · BullMQ · Slack               │
+└──────┬─────────────────┼──────────────────┬─────────┘
+       │                 │                  │
+       │ (resolves       │                  │ (HTTP for
+       │  approval       │                  │  policy /
+       │  promises)      │                  │  approval /
+       │                 │                  │  audit ingest)
+       ▼                 │                  │
+┌─────────────────┐      │      ┌───────────┴─────────┐
+│   Restate       │      │      │ GovernanceClient    │
+│   Runtime       │      │      │ SDK                 │
+└────────┬────────┘      │      │ (packages/          │
+         │               │      │  governance-sdk)    │
+         │  invokes      │      │                     │
+         ▼               │      │ wrapLLMCall,        │
+┌──────────────────────┐ │      │ wrapLLMStream,      │
+│  Workflow Service    │ │      │ callTool, withSpan, │
+│  (apps/workflows)    │ │      │ withTrace,          │
+│                      │ │      │ getMetrics          │
+│  DAG Engine          │ │      │                     │
+│  · llm / api /       │◀┘      │ EventBuffer         │
+│    approval /        │        │ CircuitBreaker      │
+│    condition /       │        │ SpanManager         │
+│    transform /       │        │ LangSmith bridge ◀──┼──▶ LangSmith
+│    parallel          │        │   (opt-in fanout)   │      (optional)
+│  · DAG validation    │        │                     │
+│  · Topological exec  │        │ Adapters: Anthropic,│
+│  · Joins + branching │        │   OpenAI, LangChain │
+│  · Durable promises  │        └─────────────────────┘
+└──────────────────────┘
 ```
 
 ---
@@ -356,7 +367,8 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 |-------|-----------|
 | Monorepo | Turborepo |
 | Backend | Fastify v4, Prisma v5, PostgreSQL 16 |
-| Queue | BullMQ + Redis |
+| Queue | BullMQ + Redis (optional) |
+| Workflow Engine | Restate v1 (durable execution) + custom DAG engine |
 | Frontend | React 18, Vite, TailwindCSS, shadcn/ui |
 | Server State | TanStack Query v5 |
 | Client State | Zustand |
@@ -366,6 +378,7 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 | Auth | JWT + bcrypt, RBAC |
 | Realtime | Server-Sent Events (SSE) |
 | AI | Provider-agnostic (Anthropic, OpenAI, Ollama — all optional) |
+| Observability | Built-in audit + (opt-in) LangSmith fanout |
 | Messaging | Slack Web API |
 | Testing | Vitest + Supertest |
 
@@ -376,26 +389,47 @@ The dashboard supports **dark and light themes** with a toggle in the top bar.
 ```
 AgentOS/
 ├── apps/
-│   ├── api/                    # REST API server
-│   │   ├── prisma/             # Database schema, migrations, seed data
+│   ├── api/                    # Fastify REST API server
+│   │   ├── prisma/             # Database schema (incl. WorkflowDefinition,
+│   │   │                       #   WorkflowExecution, WorkflowTrigger),
+│   │   │                       #   migrations, seed data
 │   │   └── src/
-│   │       ├── modules/        # One folder per domain (agents, approvals, etc.)
+│   │       ├── modules/        # One folder per domain
+│   │       │                   #   (agents, approvals, audit, analytics,
+│   │       │                   #    policies, events, showcase, users)
 │   │       ├── plugins/        # Fastify plugins (auth, DB, SSE, queue, Slack)
-│   │       ├── showcase-agents/# Demo agents (email, research, mock)
+│   │       ├── showcase-agents/# Demo agents (email, research, multi-provider, mock)
 │   │       └── workers/        # Background job processors
-│   └── web/                    # React dashboard
+│   ├── web/                    # React dashboard
+│   │   └── src/
+│   │       ├── components/     # UI components organized by domain
+│   │       ├── hooks/          # Data fetching hooks (TanStack Query)
+│   │       ├── pages/          # Route pages
+│   │       └── store/          # Client state (auth, theme)
+│   └── workflows/              # Restate-powered DAG workflow service
 │       └── src/
-│           ├── components/     # UI components organized by domain
-│           ├── hooks/          # Data fetching hooks (TanStack Query)
-│           ├── pages/          # Route pages
-│           └── store/          # Client state (auth, theme)
+│           ├── workflows/      # dag-engine.ts (level-based parallel exec)
+│           ├── executors/      # node-executor.ts, step-executor.ts
+│           ├── types/          # workflow-dag.ts (DAG schema),
+│           │                   #   workflow-definition.ts (legacy)
+│           ├── utils/          # dag-validation, workflow-registry,
+│           │                   #   anthropic, agentos-client, cost-calculator
+│           ├── examples/       # Pre-seeded DAGs (email approval,
+│           │                   #   parallel checks, conditional routing)
+│           ├── config/         # env.ts, database.ts, seed.ts
+│           └── server.ts       # Restate endpoint entry
 ├── packages/
-│   ├── types/                  # Shared validation schemas and TypeScript types
-│   └── governance-sdk/         # SDK v2 — provider-agnostic + adapters
-├── specs/                      # Feature specifications and task breakdowns
+│   ├── types/                  # Shared Zod schemas and TypeScript types
+│   └── governance-sdk/         # Provider-agnostic SDK
+│       └── src/                #   + adapters (anthropic / openai / langchain)
+│                               #   + langsmith.ts (opt-in fanout bridge)
+├── specs/                      # Feature specs (incl. 015-restate-durable-execution)
 └── docs/
     ├── SetUp.md                # Setup guide + API curl reference
-    └── TECHNICAL_DESIGN.md     # Detailed technical design document
+    ├── TECHNICAL_DESIGN.md     # Detailed technical design document
+    ├── ENHANCEMENTS.md         # Spec-ready reference for in-flight enhancements
+    ├── plans/                  # In-flight integration plans (LangSmith, ...)
+    └── Reviews/                # Code review notes
 ```
 
 ---
@@ -404,43 +438,70 @@ AgentOS/
 
 > Detailed setup instructions, environment variables, and curl examples for every API endpoint are in [`docs/SetUp.md`](docs/SetUp.md).
 
-**Prerequisites**: Node.js 20+, npm 10+, Docker
+**Prerequisites**: Node.js 20+, npm 10+, Docker. To use the workflow service you also need a running **Restate** runtime — easiest via Docker.
 
 ```bash
-docker compose up -d              # Start PostgreSQL + Redis
+docker compose up -d              # Start PostgreSQL (Redis is optional)
 npm install                       # Install all dependencies
 cd apps/api
 npx prisma generate               # Generate Prisma client
-npx prisma migrate dev             # Run database migrations
-npx prisma db seed                 # Seed users, agents, policies
+npx prisma migrate dev            # Run database migrations
+npx prisma db seed                # Seed users, agents, policies
 cd ../..
 cp apps/web/.env.example apps/web/.env
-npm run dev                        # Start API (port 3000) + Dashboard (port 5173)
+npm run dev                       # Start API (:3000) + Web (:5173) + Workflows (:9080)
 ```
 
 Open http://localhost:5173 and sign in as `admin@agentos.dev` / `admin123`.
 
+**To exercise workflows**, also run Restate locally and register the workflows service:
+
+```bash
+docker run -d --name restate -p 8080:8080 -p 9070:9070 docker.restate.dev/restatedev/restate
+curl -X POST http://localhost:9070/deployments \
+  -H 'Content-Type: application/json' \
+  -d '{"uri": "http://host.docker.internal:9080", "force": true}'
+```
+
+Trigger an example DAG (`emailApprovalDAG` is pre-seeded on boot):
+
+```bash
+curl -X POST http://localhost:8080/DAGWorkflowEngine/wf-demo-001/run/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workflowDefinitionId": "email-approval-dag-v1",
+    "agentId": "<AGENT_ID>",
+    "traceId": "trace-demo",
+    "input": { "task": "Draft Q3 follow-up", "recipient": "team@example.com", "riskScore": 0.8 }
+  }'
+```
+
 ---
 
-## Development Roadmap
+## Status & Roadmap
 
-| EPIC / FIX | Feature | Status |
-|------------|---------|--------|
-| EPIC 2 | JWT Auth, RBAC, Agent CRUD, Audit Logging | Done |
-| EPIC 4 | Approval Workflows + Slack Integration | Done |
-| EPIC 5 | Policy Engine | Done |
-| EPIC 6 | Analytics & Cost Tracking | Done |
-| EPIC 7 | Showcase Agents & Mock Data | Done |
-| EPIC 8 | React Dashboard (8 pages) | Done |
-| FIX-01 | Repository Pattern + Unit-Testable Business Logic | Done |
-| FIX-02 | Custom Error Hierarchy + Global Error Handler | Done |
-| FIX-03 | Security Headers + Request ID + SSE Token Fix | Done |
-| FIX-04 | Fix N+1 Query Performance | Done |
-| FIX-05 | API Versioning (`/api/v1/` prefix) | Done |
-| SDK v2 | Provider-Agnostic SDK, EventBuffer, SpanManager, Policy Gate, Cost Budgets, CircuitBreaker, Streaming, Framework Adapters, Showcase Rewrites | Done |
-| v2.1 (production hardening) | Per-trace IDs, EventBuffer requeue + auto-flush on shutdown, public `ticketId` on `PolicyDeniedError`, SDK auth on `/policies/check`, dashboard "Rotate API key" | Done |
-| v2.2 (real-money safeguards) | Server-side rolling 30-day budgets (HTTP 402), batched `findInfoByIds` for audit ingest (kills N+1), typed `ApprovalRequestError`, structured error envelope across 31 routes, `InvalidCredentialsError` to prevent user enumeration | Done |
-| v2.3 (observability + resilience) | `span_failed` events with metadata, per-route `CircuitBreakerRegistry` + full-jitter exponential backoff, `gov.getMetrics()`, configurable `sseConnectTimeoutMs`, lazy `eventsource` polyfill, OpenAI/Anthropic streaming + embeddings adapters, `isPolicyDeniedError` adopted across showcase agents, JSDoc on all SDK public methods, `researchAgent` end-to-end streaming demo | Done |
+**Shipped and in use**
+
+- JWT auth, RBAC, and the agent registry with lifecycle, risk tiers, and rotatable API keys
+- Audit trail with hierarchical span trees, `span_failed` tagging, and CSV export
+- Policy engine with pre-execution gating (ALLOW / DENY / REQUIRE_APPROVAL)
+- Approval workflows with Slack notifications and automatic expiry
+- Analytics and cost tracking, including server-side rolling 30-day budgets (HTTP 402)
+- Provider-agnostic GovernanceClient SDK — `EventBuffer`, `SpanManager`, per-route `CircuitBreaker`, streaming, typed errors, framework adapters, and `getMetrics()`
+- React dashboard (8 pages) with real-time SSE updates and agent health scores
+- Showcase agents and mock data seeder
+- Durable workflow engine on Restate — DAG validation, topological parallel execution, joins, conditional branching, six node types, durable approval gates, and persisted executions
+- LangSmith fanout bridge in the SDK with isolated buffer/breaker, redaction, and dashboard deep-links
+
+**Planned**
+
+- Workflow dashboard pages — definition list, execution timeline visualization, and a DAG builder UI
+- REST CRUD over `WorkflowDefinition` / `WorkflowTrigger`, with versioning and RBAC
+- Scheduled / webhook / event trigger dispatchers (schema exists; dispatchers do not)
+- OpenAI executor for the `llm` workflow node (Anthropic is wired today)
+- LangSmith operator controls (per-agent DB toggle enforced by the SDK) and production hardening (isolation load-tests, bridge-breaker alarms, reconciliation worker)
+
+See [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) and the `specs/` directory for the detailed status of in-flight work.
 
 ---
 
@@ -450,6 +511,7 @@ Open http://localhost:5173 and sign in as `admin@agentos.dev` / `admin123`.
 |----------|---------------|
 | [`docs/SetUp.md`](docs/SetUp.md) | How to run locally, environment variables, curl examples for every API endpoint |
 | [`docs/TECHNICAL_DESIGN.md`](docs/TECHNICAL_DESIGN.md) | Full technical design — data model, API reference, frontend architecture, security, design principles |
+| [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) | Spec-ready reference for in-flight enhancements (durable workflows, LangSmith fanout) |
 | `specs/` | Per-feature specifications, implementation plans, research notes, and task checklists |
 
 ---
